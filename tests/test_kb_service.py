@@ -1,7 +1,7 @@
 import unittest
 import logging
 
-from app.services import user_service, kb_service
+from app.services import user_service, kb_service, topic_service
 
 
 class TestKbService(unittest.TestCase):
@@ -9,12 +9,15 @@ class TestKbService(unittest.TestCase):
         logging.disable(logging.CRITICAL)
         user_service._set_repo_for_test(user_service.InMemoryUserRepo())
         kb_service._set_repo_for_test(kb_service.InMemoryKbRepo())
+        # 建库会种入默认分类，用内存分类仓库隔离，避免触碰真实 MySQL
+        topic_service._set_repo_for_test(topic_service.InMemoryTopicRepo())
         # 普通用户默认配额 3
         self.user = user_service.create_user("alice", "a123", role="user")
 
     def tearDown(self):
         user_service._reset_repo_for_test()
         kb_service._reset_repo_for_test()
+        topic_service._reset_repo_for_test()
         logging.disable(logging.NOTSET)
 
     def test_create_and_list(self):
@@ -23,6 +26,12 @@ class TestKbService(unittest.TestCase):
         self.assertEqual(kb["owner_id"], self.user["id"])
         kbs = kb_service.list_by_owner(self.user["id"])
         self.assertEqual(len(kbs), 1)
+
+    def test_create_kb_seeds_default_topics(self):
+        kb = kb_service.create_kb(self.user["id"], "库1", "描述")
+        topics = topic_service.list_topics(kb["id"])
+        self.assertEqual(len(topics), len(topic_service.DEFAULT_TOPICS))
+        self.assertIn("技术文档", [t["name"] for t in topics])
 
     def test_quota_enforced(self):
         for i in range(3):

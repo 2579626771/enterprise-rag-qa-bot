@@ -1,17 +1,4 @@
 from app.services.answer_service import generate_answer
-from app.services.embedding_service import(
-    create_fake_embeddings_for_chunks,
-    create_query_embedding,
-)
-from app.services.vector_store_service import(
-    create_vector_store,
-    add_embeddings_to_store,
-    find_top_k_similar_embeddings,
-)
-from app.services.document_service import(
-    create_document_from_file,
-    split_document_by_paragraphs,
-)
 from app.services import knowledge_base_service
 from app.config import RAG_TOP_K, RAG_MAX_DISTANCE
 from app.utils.logger import get_logger
@@ -72,46 +59,3 @@ def answer_from_knowledge_base(question: str, top_k: int | None = None, kb_id: i
         "answer": answer,
         "sources": sources,
     }
-
-def run_rag_pipeline(question: str, file_path: str) -> dict:
-	document = create_document_from_file(
-		document_id = 2,
-		file_path = file_path,
-	)
-	chunks = split_document_by_paragraphs(document)
-	embeddings = create_fake_embeddings_for_chunks(chunks)
-	vector_store = create_vector_store()
-	add_embeddings_to_store(vector_store,embeddings)
-
-	query_vector = create_query_embedding(question)
-	top_embeddings = find_top_k_similar_embeddings(
-		vector_store,
-		query_vector,	
-		k = 2,
-	)
-
-	logger.info(f"读取文件：{document.filename}")
-	logger.info(f"分块数量：{len(chunks)}") 
-	logger.info(f"向量数量：{len(embeddings)}")
-	logger.info(f"向量库保存数量：{len(vector_store)}") 
-	top_chunk_ids = [embedding.chunk_id for embedding in top_embeddings]
-	context_parts = []
-
-	for chunk in chunks:
-		if chunk.id in top_chunk_ids:
-			clean_content = chunk.content.replace("\n", " ")
-			context_parts.append(clean_content)
-	context = "\n---\n".join(context_parts)
-	logger.info(f"TopK chunk_ids:{top_chunk_ids}")
-	logger.info(f"TopK 上下文：{context}")
-	logger.info(f"用户问题：{question}")
-
-	answer = generate_answer(
-		question=question,
-		context=context,
-	)
-	logger.info(f"生成的回答: {answer}")
-	return {
-		"answer":answer,
-		"top_chunk_ids":top_chunk_ids,
-	}

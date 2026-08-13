@@ -70,14 +70,17 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { KNOWLEDGE_TOPICS } from '../api/client'
+import { computed, onMounted, ref } from 'vue'
 import { useUploadTasks } from '../composables/useUploadTasks'
 import { useKnowledgeBase } from '../composables/useKnowledgeBase'
+import { useTopics } from '../composables/useTopics'
 
 const emit = defineEmits<{ (e: 'close'): void; (e: 'uploaded', filename: string): void }>()
 
-const topics = KNOWLEDGE_TOPICS
+const { topics, ensureLoaded } = useTopics()
+onMounted(() => {
+  void ensureLoaded()
+})
 const { runUpload } = useUploadTasks()
 const { currentKbId } = useKnowledgeBase()
 

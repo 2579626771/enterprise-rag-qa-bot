@@ -118,6 +118,15 @@ class InMemoryMetadataRepo:
             del self._store[k]
         return len(keys)
 
+    def rename_topic_in_kb(self, kb_id: int, old_name: str, new_name: str) -> int:
+        """把某知识库下所有 topic==old_name 的文档改为 new_name。返回受影响条数。"""
+        affected = 0
+        for (kid, _fname), row in self._store.items():
+            if kid == kb_id and row.get("topic") == old_name:
+                row["topic"] = new_name
+                affected += 1
+        return affected
+
 
 # ---------------------------------------------------------------------------
 # MySQL 仓库：真实落库。复合主键 (kb_id, filename)
@@ -285,6 +294,20 @@ class MySQLMetadataRepo:
             conn.close()
         return affected
 
+    def rename_topic_in_kb(self, kb_id: int, old_name: str, new_name: str) -> int:
+        """把某知识库下所有 topic==old_name 的文档改为 new_name。返回受影响条数。"""
+        conn = self._connect()
+        try:
+            with conn.cursor() as cur:
+                affected = cur.execute(
+                    "UPDATE documents SET topic = %s WHERE kb_id = %s AND topic = %s",
+                    (new_name, kb_id, old_name),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        return affected
+
 
 # ---------------------------------------------------------------------------
 # 仓库单例管理：懒初始化 + 失败降级。
@@ -350,6 +373,13 @@ def delete(kb_id: int, filename: str) -> bool:
 def delete_by_kb(kb_id: int) -> int:
     """删除某知识库的所有文档元数据（删库时级联）。返回删除条数。"""
     return _get_repo().delete_by_kb(kb_id)
+
+
+def rename_topic_in_kb(kb_id: int, old_name: str, new_name: str) -> int:
+    """把某知识库下所有用旧分类名的文档 topic 改为新名（分类重命名联动）。返回受影响条数。"""
+    if old_name == new_name:
+        return 0
+    return _get_repo().rename_topic_in_kb(kb_id, old_name, new_name)
 
 
 # ---- 测试辅助 ----

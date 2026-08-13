@@ -287,7 +287,16 @@ def create_kb(
                 f"已达知识库上限（{used}/{quota}），请向管理员申请更多配额"
             )
     row = _get_repo().create(owner_id=owner_id, name=name, description=(description or "").strip())
-    return _public(row)
+    kb = _public(row)
+    # 新建知识库后种入默认主题分类（每个库有独立的一组分类）。
+    # 延迟导入避免潜在的模块级循环依赖；失败不影响建库主流程。
+    try:
+        from app.services import topic_service
+
+        topic_service.seed_defaults(kb["id"])
+    except Exception as exc:
+        logger.warning("为知识库 %s 种入默认分类失败（不影响建库）：%s", kb["id"], exc)
+    return kb
 
 
 def get(kb_id: int) -> Optional[dict]:

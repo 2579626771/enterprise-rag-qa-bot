@@ -54,6 +54,10 @@
         <option value="">全部分类</option>
         <option v-for="t in topics" :key="t" :value="t">{{ t }}</option>
       </select>
+      <button class="btn-reconcile" type="button" @click="openTopicManager" title="管理当前知识库的主题分类">
+        <i class="fa-solid fa-tags"></i>
+        管理分类
+      </button>
       <div class="search-box">
         <i class="fa-solid fa-magnifying-glass"></i>
         <input v-model="keyword" type="text" placeholder="搜索文档名…" />
@@ -152,6 +156,55 @@
         </div>
       </div>
     </div>
+
+    <!-- 主题分类管理弹窗（针对当前知识库）-->
+    <div v-if="showTopicManager" class="modal-mask" @click.self="showTopicManager = false">
+      <div class="modal">
+        <div class="modal-head">
+          <h3>管理分类 · {{ currentKb?.name || '当前知识库' }}</h3>
+          <button class="modal-close" type="button" @click="showTopicManager = false"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="detail-body">
+          <!-- 新增 -->
+          <div class="topic-add">
+            <input
+              v-model="newTopic"
+              class="text-input"
+              placeholder="输入新分类名称，回车或点新增"
+              @keydown.enter="onAddTopic"
+            />
+            <button class="primary" type="button" :disabled="topicBusy || !newTopic.trim()" @click="onAddTopic">新增</button>
+          </div>
+
+          <!-- 列表 + 行内改名/删除 -->
+          <ul class="topic-list">
+            <li v-for="t in items" :key="t.id" class="topic-row">
+              <template v-if="editingTopicId === t.id">
+                <input v-model="editingTopicName" class="text-input" @keydown.enter="onSaveTopic(t.id)" />
+                <div class="topic-ops">
+                  <button class="op-link" type="button" :disabled="topicBusy || !editingTopicName.trim()" @click="onSaveTopic(t.id)">保存</button>
+                  <button class="op-link" type="button" @click="cancelEditTopic">取消</button>
+                </div>
+              </template>
+              <template v-else>
+                <span class="topic-name">{{ t.name }}</span>
+                <div class="topic-ops">
+                  <button class="op-link" type="button" title="重命名" @click="startEditTopic(t.id, t.name)"><i class="fa-solid fa-pen"></i></button>
+                  <button class="op-link danger" type="button" title="删除" @click="onDeleteTopic(t)"><i class="fa-solid fa-trash-can"></i></button>
+                </div>
+              </template>
+            </li>
+            <li v-if="items.length === 0" class="topic-empty">该知识库暂无分类，添加一个吧</li>
+          </ul>
+
+          <p class="topic-hint"><i class="fa-solid fa-circle-info"></i> 重命名会同步更新本库下使用该分类的文档；删除仅移除候选，已上传文档保留原分类标签。</p>
+          <p v-if="topicErr" class="msg error">{{ topicErr }}</p>
+        </div>
+        <div class="modal-foot">
+          <button class="btn-ghost" type="button" @click="showTopicManager = false">关闭</button>
+        </div>
+      </div>
+    </div>
   </main>
 </template>
 
@@ -165,12 +218,12 @@ import {
   extractErrorMessage,
   reconcile,
   reloadKnowledgeBase,
-  KNOWLEDGE_TOPICS,
   type StatsResponse,
   type DocumentItem,
 } from '../api/client'
 import { useUploadTasks } from '../composables/useUploadTasks'
 import { useKnowledgeBase } from '../composables/useKnowledgeBase'
+import { useTopics } from '../composables/useTopics'
 import UploadModal from '../components/UploadModal.vue'
 import UploadProgressModal from '../components/UploadProgressModal.vue'
 
@@ -185,9 +238,9 @@ interface DocRow {
   uploadedAt: string
 }
 
-const topics = KNOWLEDGE_TOPICS
+const { topics, items, ensureLoaded: ensureTopics, addTopic, editTopic, removeTopic } = useTopics()
 const { activeCount, completedTick } = useUploadTasks()
-const { kbList, currentKbId, selectKb, refreshKbs } = useKnowledgeBase()
+const { kbList, currentKbId, currentKb, selectKb, refreshKbs } = useKnowledgeBase()
 
 const docs = ref<DocumentItem[]>([])
 const stats = ref<StatsResponse | null>(null)
@@ -200,6 +253,14 @@ const showProgress = ref(false)
 const reconciling = ref(false)
 const reloading = ref(false)
 const detailRow = ref<DocRow | null>(null)
+
+// 主题分类管理弹窗状态
+const showTopicManager = ref(false)
+const newTopic = ref('')
+const editingTopicId = ref<number | null>(null)
+const editingTopicName = ref('')
+const topicBusy = ref(false)
+const topicErr = ref('')
 
 const topicFilter = ref('')
 const keyword = ref('')
@@ -275,6 +336,76 @@ async function refresh() {
 
 function openDetail(row: DocRow) {
   detailRow.value = row
+}
+
+// ---- 主题分类管理 ----
+function openTopicManager() {
+  if (!currentKbId.value) {
+    notice.value = '请先选择一个知识库'
+    window.setTimeout(() => (notice.value = ''), 2600)
+    return
+  }
+  topicErr.value = ''
+  newTopic.value = ''
+  cancelEditTopic()
+  showTopicManager.value = true
+  void ensureTopics()
+}
+
+async function onAddTopic() {
+  const name = newTopic.value.trim()
+  if (!name || topicBusy.value) return
+  topicBusy.value = true
+  topicErr.value = ''
+  try {
+    await addTopic(name)
+    newTopic.value = ''
+    await refresh() // 同步文档列表（分类下拉/筛选已由 useTopics 刷新）
+  } catch (e) {
+    topicErr.value = extractErrorMessage(e)
+  } finally {
+    topicBusy.value = false
+  }
+}
+
+function startEditTopic(id: number, name: string) {
+  editingTopicId.value = id
+  editingTopicName.value = name
+  topicErr.value = ''
+}
+
+function cancelEditTopic() {
+  editingTopicId.value = null
+  editingTopicName.value = ''
+}
+
+async function onSaveTopic(id: number) {
+  const name = editingTopicName.value.trim()
+  if (!name || topicBusy.value) return
+  topicBusy.value = true
+  topicErr.value = ''
+  try {
+    await editTopic(id, name)
+    cancelEditTopic()
+    await refresh() // 重命名联动了文档 topic，刷新表格
+  } catch (e) {
+    topicErr.value = extractErrorMessage(e)
+  } finally {
+    topicBusy.value = false
+  }
+}
+
+async function onDeleteTopic(t: { id: number; name: string }) {
+  if (!confirm(`确定删除分类「${t.name}」？已上传文档会保留原分类标签，仅从候选中移除。`)) return
+  topicBusy.value = true
+  topicErr.value = ''
+  try {
+    await removeTopic(t.id)
+  } catch (e) {
+    topicErr.value = extractErrorMessage(e)
+  } finally {
+    topicBusy.value = false
+  }
 }
 
 function onRename(_row: DocRow) {
@@ -353,6 +484,7 @@ function onSelectKb(id: number) {
 }
 
 onMounted(async () => {
+  void ensureTopics()
   // 确保知识库列表已加载（App 可能已加载，这里兜底），再拉当前库的文档
   if (kbList.value.length === 0) {
     try {

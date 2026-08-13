@@ -34,7 +34,7 @@
           <i class="fa-regular fa-comment-dots session-icon"></i>
           <div class="session-copy">
             <strong :title="s.sessionTitle">{{ s.sessionTitle }}</strong>
-            <span>{{ s.lastTime }} · {{ s.messages.length }}条</span>
+            <span>{{ s.lastTime }} · {{ s.messageCount }}条</span>
           </div>
           <button
             class="icon-button"
@@ -114,7 +114,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { askQuestion, extractErrorMessage } from '../api/client'
 import { useSessions } from '../composables/useSessions'
 import { useKnowledgeBase } from '../composables/useKnowledgeBase'
@@ -123,6 +123,7 @@ const {
   sessions,
   currentSessionId,
   currentMessages,
+  init,
   newConversation,
   selectSession,
   toggleFavorite,
@@ -131,6 +132,10 @@ const {
   appendMessage,
   ensureCurrent,
 } = useSessions()
+
+onMounted(() => {
+  void init()
+})
 
 const quickQuestions = [
   '这个知识库里都有哪些内容？',
@@ -149,34 +154,35 @@ const visibleSessions = computed(() =>
   filter.value === 'favorite' ? sessions.value.filter((s) => s.isFavorite) : sessions.value,
 )
 
-function onNew() {
-  newConversation()
+async function onNew() {
+  await newConversation()
   draft.value = ''
 }
 
-function onRename(sessionId: string) {
+async function onRename(sessionId: number) {
   const s = sessions.value.find((x) => x.sessionId === sessionId)
   const next = window.prompt('重命名会话', s?.sessionTitle ?? '')
-  if (next) renameSession(sessionId, next)
+  if (next) await renameSession(sessionId, next)
 }
 
 async function send() {
   const question = draft.value.trim()
   if (!question || asking.value) return
   if (!currentKbId.value) {
-    appendMessage(ensureCurrent(), { role: 'assistant', content: '请先在「资料档案库」选择或创建一个知识库。' })
+    const sid = await ensureCurrent()
+    await appendMessage(sid, { role: 'assistant', content: '请先在「资料档案库」选择或创建一个知识库。' })
     return
   }
 
-  const sid = ensureCurrent()
-  appendMessage(sid, { role: 'user', content: question })
+  const sid = await ensureCurrent()
+  await appendMessage(sid, { role: 'user', content: question })
   draft.value = ''
   asking.value = true
   try {
     const res = await askQuestion(question, currentKbId.value)
-    appendMessage(sid, { role: 'assistant', content: res.answer, sources: res.sources })
+    await appendMessage(sid, { role: 'assistant', content: res.answer, sources: res.sources })
   } catch (e) {
-    appendMessage(sid, { role: 'assistant', content: `出错了：${extractErrorMessage(e)}` })
+    await appendMessage(sid, { role: 'assistant', content: `出错了：${extractErrorMessage(e)}` })
   } finally {
     asking.value = false
   }

@@ -11,6 +11,8 @@ from app.services import user_service
 from app.services import kb_service
 from app.services import quota_service
 from app.services import auth_service
+from app.services import session_service
+from app.services import topic_service
 from app.services.document_service import kb_documents_dir
 from fastapi.testclient import TestClient
 from app.api import app
@@ -29,6 +31,8 @@ class TestApi(unittest.TestCase):
         kb_service._set_repo_for_test(kb_service.InMemoryKbRepo())
         quota_service._set_repo_for_test(quota_service.InMemoryQuotaRepo())
         metadata_service._set_repo_for_test(metadata_service.InMemoryMetadataRepo())
+        session_service._set_repo_for_test(session_service.InMemorySessionRepo())
+        topic_service._set_repo_for_test(topic_service.InMemoryTopicRepo())
 
         admin = user_service.create_user(
             "test_admin", "admin_pw", role="admin", display_name="测试管理员"
@@ -62,6 +66,8 @@ class TestApi(unittest.TestCase):
 
         knowledge_base_service._reset_collection_for_test()
         metadata_service._reset_repo_for_test()
+        session_service._reset_repo_for_test()
+        topic_service._reset_repo_for_test()
         user_service._reset_repo_for_test()
         kb_service._reset_repo_for_test()
         quota_service._reset_repo_for_test()
@@ -298,6 +304,152 @@ class TestApi(unittest.TestCase):
             headers={"Authorization": f"Bearer {bob_token}"},
         )
         self.assertEqual(r.status_code, 403)
+
+    # ---- 会话历史（服务端持久化 + 归属隔离）----
+    def test_session_crud_flow(self):
+        # 新建
+        r = self.client.post("/sessions", json={"title": "我的会话"})
+        self.assertEqual(r.status_code, 200)
+        sid = r.json()["id"]
+        # 列表
+        listed = self.client.get("/sessions").json()["sessions"]
+        self.assertTrue(any(s["id"] == sid for s in listed))
+        # 追加消息
+        r2 = self.client.post(
+            f"/sessions/{sid}/messages",
+            json={"role": "user", "content": "你好", "sources": []},
+        )
+        self.assertEqual(r2.status_code, 200)
+        # 读消息
+        msgs = self.client.get(f"/sessions/{sid}/messages").json()["messages"]
+        self.assertEqual(len(msgs), 1)
+        self.assertEqual(msgs[0]["content"], "你好")
+        # 改名
+        r3 = self.client.patch(f"/sessions/{sid}", json={"title": "改名会话"})
+        self.assertEqual(r3.status_code, 200)
+        self.assertEqual(r3.json()["title"], "改名会话")
+        # 收藏切换
+        r4 = self.client.patch(f"/sessions/{sid}", json={"toggle_favorite": True})
+        self.assertTrue(r4.json()["is_favorite"])
+        # 删除
+        r5 = self.client.delete(f"/sessions/{sid}")
+        self.assertEqual(r5.status_code, 200)
+        self.assertEqual(self.client.get("/sessions").json()["sessions"], [])
+
+    def test_session_isolated_between_users(self):
+        # admin 建一个会话
+        sid = self.client.post("/sessions", json={"title": "admin会话"}).json()["id"]
+        # bob 用自己的令牌
+        bob = user_service.create_user("bob", "bob123", role="user")
+        bob_headers = {"Authorization": f"Bearer {auth_service.create_access_token(bob)}"}
+        # bob 看不到 admin 的会话
+        self.assertEqual(self.client.get("/sessions", headers=bob_headers).json()["sessions"], [])
+        # bob 无法读取/删除/追加 admin 的会话 → 404
+        self.assertEqual(
+            self.client.get(f"/sessions/{sid}/messages", headers=bob_headers).status_code, 404
+        )
+        self.assertEqual(self.client.delete(f"/sessions/{sid}", headers=bob_headers).status_code, 404)
+        self.assertEqual(
+            self.client.post(
+                f"/sessions/{sid}/messages",
+                json={"role": "user", "content": "x"},
+                headers=bob_headers,
+            ).status_code,
+            404,
+        )
+
+    def test_session_requires_auth(self):
+        r = self.client.get("/sessions", headers={"Authorization": ""})
+        self.assertEqual(r.status_code, 401)
+
+    def test_session_update_no_content_400(self):
+        sid = self.client.post("/sessions", json={"title": "会话"}).json()["id"]
+        r = self.client.patch(f"/sessions/{sid}", json={})
+        self.assertEqual(r.status_code, 400)
+
+    # ---- 主题分类（按知识库隔离：属主或管理员可增删改查）----
+    def test_new_kb_auto_seeded(self):
+        # setUp 建库时应已自动种入 8 个默认分类
+        r = self.client.get("/topics", params={"kb_id": self.kb_id})
+        self.assertEqual(r.status_code, 200)
+        names = [t["name"] for t in r.json()["topics"]]
+        self.assertEqual(len(names), 8)
+        self.assertIn("技术文档", names)
+
+    def test_add_rename_delete_topic(self):
+        # 新增
+        r = self.client.post("/topics", json={"kb_id": self.kb_id, "name": "安全合规"})
+        self.assertEqual(r.status_code, 200)
+        tid = r.json()["id"]
+        self.assertEqual(r.json()["kb_id"], self.kb_id)
+        # 重命名
+        rr = self.client.patch(f"/topics/{tid}", json={"name": "安全与合规"})
+        self.assertEqual(rr.status_code, 200)
+        self.assertEqual(rr.json()["name"], "安全与合规")
+        names = [t["name"] for t in self.client.get("/topics", params={"kb_id": self.kb_id}).json()["topics"]]
+        self.assertIn("安全与合规", names)
+        self.assertNotIn("安全合规", names)
+        # 删除
+        rd = self.client.delete(f"/topics/{tid}")
+        self.assertEqual(rd.status_code, 200)
+        names2 = [t["name"] for t in self.client.get("/topics", params={"kb_id": self.kb_id}).json()["topics"]]
+        self.assertNotIn("安全与合规", names2)
+
+    def test_rename_cascades_to_documents(self):
+        # 上传一个文档并归类为「技术文档」
+        self._upload("cascade.txt", "级联重命名测试文档内容。", topic="技术文档")
+        # 找到该库「技术文档」分类的 id
+        topics = self.client.get("/topics", params={"kb_id": self.kb_id}).json()["topics"]
+        tid = next(t["id"] for t in topics if t["name"] == "技术文档")
+        # 重命名分类
+        self.client.patch(f"/topics/{tid}", json={"name": "技术资料"})
+        # 文档的 topic 应联动更新
+        doc = metadata_service.get(self.kb_id, "cascade.txt")
+        self.assertEqual(doc["topic"], "技术资料")
+
+    def test_add_topic_empty_rejected(self):
+        r = self.client.post("/topics", json={"kb_id": self.kb_id, "name": "   "})
+        self.assertEqual(r.status_code, 400)
+
+    def test_topic_kb_isolation(self):
+        # 再建一个库，它有自己独立的分类
+        kb2 = kb_service.create_kb(
+            self.client.get("/auth/me").json()["id"], "第二个库", "", enforce_quota=False
+        )
+        self.client.post("/topics", json={"kb_id": self.kb_id, "name": "仅库一"})
+        names2 = [t["name"] for t in self.client.get("/topics", params={"kb_id": kb2["id"]}).json()["topics"]]
+        self.assertNotIn("仅库一", names2)  # 库二看不到库一新增的分类
+        self.assertEqual(len(names2), 8)  # 库二仍是自己的 8 个默认分类
+
+    def test_delete_missing_topic_404(self):
+        r = self.client.delete("/topics/999999")
+        self.assertEqual(r.status_code, 404)
+
+    def test_non_owner_forbidden(self):
+        # bob 不能访问 admin 的库分类
+        bob = user_service.create_user("bob", "bob123", role="user")
+        bob_headers = {"Authorization": f"Bearer {auth_service.create_access_token(bob)}"}
+        # 读 admin 库 → 403
+        self.assertEqual(
+            self.client.get("/topics", params={"kb_id": self.kb_id}, headers=bob_headers).status_code,
+            403,
+        )
+        # 增 admin 库 → 403
+        self.assertEqual(
+            self.client.post(
+                "/topics", json={"kb_id": self.kb_id, "name": "越权"}, headers=bob_headers
+            ).status_code,
+            403,
+        )
+        # 改/删 admin 库某分类 → 403（先拿一个 admin 库的分类 id）
+        tid = self.client.get("/topics", params={"kb_id": self.kb_id}).json()["topics"][0]["id"]
+        self.assertEqual(
+            self.client.patch(f"/topics/{tid}", json={"name": "x"}, headers=bob_headers).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.delete(f"/topics/{tid}", headers=bob_headers).status_code, 403
+        )
 
 
 if __name__ == "__main__":

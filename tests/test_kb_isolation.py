@@ -19,6 +19,7 @@ from app.services import (
     kb_service,
     quota_service,
     auth_service,
+    topic_service,
 )
 from app.services.document_service import kb_documents_dir
 from fastapi.testclient import TestClient
@@ -37,6 +38,7 @@ class TestKbIsolation(unittest.TestCase):
         kb_service._set_repo_for_test(kb_service.InMemoryKbRepo())
         quota_service._set_repo_for_test(quota_service.InMemoryQuotaRepo())
         metadata_service._set_repo_for_test(metadata_service.InMemoryMetadataRepo())
+        topic_service._set_repo_for_test(topic_service.InMemoryTopicRepo())
 
         chroma_client = chromadb.EphemeralClient()
         try:
@@ -68,6 +70,7 @@ class TestKbIsolation(unittest.TestCase):
         knowledge_base_service._reset_collection_for_test()
         for svc in (metadata_service, user_service, kb_service, quota_service):
             svc._reset_repo_for_test()
+        topic_service._reset_repo_for_test()
         for d in dirs:
             if d.exists():
                 shutil.rmtree(d, ignore_errors=True)

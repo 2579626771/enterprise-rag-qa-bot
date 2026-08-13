@@ -183,15 +183,13 @@ export function extractErrorMessage(err: unknown): string {
 /** 后端 /documents 返回的是完整路径，这里取文件名部分用于展示与删除 */
 export function basename(path: string): string {
   return path.split(/[\\/]/).pop() || path
-}
-
-/** 从文件名推断类型标签（大写扩展名） */
+}/** 从文件名推断类型标签（大写扩展名） */
 export function fileExt(name: string): string {
   const ext = name.split('.').pop()
   return ext ? ext.toUpperCase() : 'FILE'
 }
 
-/** 知识主题分类选项（参考图3；本轮前端占位，下轮落 MySQL） */
+/** 知识主题分类默认值（接口失败时的降级兜底；正式数据来自后端 /topics） */
 export const KNOWLEDGE_TOPICS = [
   '技术文档',
   '产品手册',
@@ -202,6 +200,37 @@ export const KNOWLEDGE_TOPICS = [
   '常见问答',
   '其他',
 ] as const
+
+/** 后端 /topics 返回的单个主题分类（归属某知识库） */
+export interface Topic {
+  id: number
+  kb_id: number
+  name: string
+  sort_order: number
+}
+
+/** 拉取某知识库的主题分类（属主或管理员可读） */
+export async function fetchTopics(kbId: number): Promise<Topic[]> {
+  const { data } = await http.get<{ topics: Topic[] }>('/topics', { params: { kb_id: kbId } })
+  return data.topics
+}
+
+/** 在某知识库下新增主题分类（属主或管理员，幂等） */
+export async function createTopic(kbId: number, name: string): Promise<Topic> {
+  const { data } = await http.post<Topic>('/topics', { kb_id: kbId, name })
+  return data
+}
+
+/** 重命名主题分类（属主或管理员），后端联动更新本库下用旧分类名的文档 */
+export async function renameTopic(id: number, name: string): Promise<Topic> {
+  const { data } = await http.patch<Topic>(`/topics/${id}`, { name })
+  return data
+}
+
+/** 删除主题分类（属主或管理员） */
+export async function deleteTopic(id: number): Promise<void> {
+  await http.delete(`/topics/${id}`)
+}
 
 // ---- 认证与用户管理 ----
 
@@ -365,5 +394,76 @@ export async function approveQuotaRequest(id: number): Promise<QuotaRequest> {
 /** 驳回申请（仅管理员） */
 export async function rejectQuotaRequest(id: number): Promise<QuotaRequest> {
   const { data } = await http.post<QuotaRequest>(`/kb-requests/${id}/reject`)
+  return data
+}
+
+// ---- 聊天会话（服务端持久化，按用户归属）----
+
+/** 后端 /sessions 返回的会话（不含消息，含消息计数） */
+export interface SessionSummary {
+  id: number
+  title: string
+  is_favorite: boolean
+  message_count: number
+  created_at: string
+  updated_at: string
+}
+
+/** 后端 /sessions/{id}/messages 返回的单条消息 */
+export interface SessionMessage {
+  id: number
+  role: 'user' | 'assistant'
+  content: string
+  sources: Source[]
+  created_at: string
+}
+
+/** 当前用户的会话列表（最近更新在前） */
+export async function listSessions(): Promise<SessionSummary[]> {
+  const { data } = await http.get<{ sessions: SessionSummary[] }>('/sessions')
+  return data.sessions
+}
+
+/** 新建会话 */
+export async function createSession(title = '未命名会话'): Promise<SessionSummary> {
+  const { data } = await http.post<SessionSummary>('/sessions', { title })
+  return data
+}
+
+/** 会话改名 */
+export async function renameSessionApi(id: number, title: string): Promise<SessionSummary> {
+  const { data } = await http.patch<SessionSummary>(`/sessions/${id}`, { title })
+  return data
+}
+
+/** 切换会话收藏状态 */
+export async function toggleSessionFavorite(id: number): Promise<SessionSummary> {
+  const { data } = await http.patch<SessionSummary>(`/sessions/${id}`, { toggle_favorite: true })
+  return data
+}
+
+/** 删除会话（连带其消息） */
+export async function deleteSessionApi(id: number): Promise<void> {
+  await http.delete(`/sessions/${id}`)
+}
+
+/** 拉取会话内的消息（时间正序） */
+export async function listSessionMessages(id: number): Promise<SessionMessage[]> {
+  const { data } = await http.get<{ messages: SessionMessage[] }>(`/sessions/${id}/messages`)
+  return data.messages
+}
+
+/** 向会话追加一条消息 */
+export async function appendSessionMessage(
+  id: number,
+  role: 'user' | 'assistant',
+  content: string,
+  sources: Source[] = [],
+): Promise<SessionMessage> {
+  const { data } = await http.post<SessionMessage>(`/sessions/${id}/messages`, {
+    role,
+    content,
+    sources,
+  })
   return data
 }

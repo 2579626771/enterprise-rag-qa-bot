@@ -743,3 +743,16 @@ button { cursor: pointer; border: 0; background: none; }
 .task-foot { font-size: 12px; color: var(--muted); }
 .task-foot .ok { color: #1d6f42; }
 .task-foot .fail { color: #b91c1c; }
+
+/* 主题分类管理弹窗 */
+.topic-add { display: flex; gap: 8px; margin-bottom: 14px; }
+.topic-add .text-input { flex: 1; }
+.topic-list { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow-y: auto; }
+.topic-row { display: flex; align-items: center; gap: 10px; padding: 8px 4px; border-bottom: 1px solid var(--line); }
+.topic-row:last-child { border-bottom: none; }
+.topic-row .text-input { flex: 1; }
+.topic-name { flex: 1; font-size: 14px; }
+.topic-ops { display: flex; gap: 6px; flex-shrink: 0; }
+.topic-empty { padding: 20px; text-align: center; color: var(--muted); }
+.topic-hint { margin: 12px 0 0; font-size: 12px; color: var(--muted); }
+.topic-hint i { margin-right: 4px; }

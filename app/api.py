@@ -13,6 +13,8 @@ from app.services.document_service import (
 )
 from app.services import knowledge_base_service
 from app.services import metadata_service
+from app.services import session_service
+from app.services import topic_service
 from app.services import user_service
 from app.services import kb_service
 from app.services import quota_service
@@ -126,6 +128,31 @@ class UpdateQuotaRequest(BaseModel):
 class QuotaRequestCreate(BaseModel):
     amount: int
     reason: str = ""
+
+
+class CreateSessionRequest(BaseModel):
+    title: str = "未命名会话"
+
+
+class UpdateSessionRequest(BaseModel):
+    # 二选一：改名传 title；切换收藏传 toggle_favorite=true
+    title: Optional[str] = None
+    toggle_favorite: bool = False
+
+
+class AppendMessageRequest(BaseModel):
+    role: str
+    content: str
+    sources: list = []
+
+
+class CreateTopicRequest(BaseModel):
+    kb_id: int
+    name: str
+
+
+class UpdateTopicRequest(BaseModel):
+    name: str
 
 
 # ===== 认证与用户管理接口 =====
@@ -551,6 +578,130 @@ def delete_document(filename: str, kb_id: int = Query(...), current_user: dict =
         pass
 
     return {"filename": filename, "deleted": True}
+
+
+# ===== 文档主题分类（按知识库隔离：属主或管理员可增删改查）=====
+@app.get("/topics")
+def list_topics(kb_id: int = Query(...), current_user: dict = Depends(get_current_user)):
+    """列出某知识库的主题分类（属主或管理员）。"""
+    require_kb_access(kb_id, current_user)
+    return {"topics": topic_service.list_topics(kb_id)}
+
+
+@app.post("/topics")
+def create_topic(request: CreateTopicRequest, current_user: dict = Depends(get_current_user)):
+    """在某知识库下新增分类（属主或管理员；名称唯一、幂等）。"""
+    require_kb_access(request.kb_id, current_user)
+    try:
+        return topic_service.add_topic(request.kb_id, request.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.patch("/topics/{topic_id}")
+def update_topic(
+    topic_id: int,
+    request: UpdateTopicRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """重命名分类（属主或管理员），并联动更新本库下用旧分类名的文档。"""
+    topic = topic_service.get(topic_id)
+    if topic is None:
+        raise HTTPException(status_code=404, detail="分类不存在")
+    require_kb_access(topic["kb_id"], current_user)
+    try:
+        result = topic_service.rename_topic(topic_id, request.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if result is None:
+        raise HTTPException(status_code=404, detail="分类不存在")
+    # 联动：把本库下用旧分类名的文档 topic 同步改成新名。
+    try:
+        metadata_service.rename_topic_in_kb(
+            result["kb_id"], result["old_name"], result["new_name"]
+        )
+    except Exception:
+        pass
+    return {"id": topic_id, "kb_id": result["kb_id"], "name": result["new_name"]}
+
+
+@app.delete("/topics/{topic_id}")
+def delete_topic(topic_id: int, current_user: dict = Depends(get_current_user)):
+    """删除分类（属主或管理员）。已上传文档保留其原分类名字符串。"""
+    topic = topic_service.get(topic_id)
+    if topic is None:
+        raise HTTPException(status_code=404, detail="分类不存在")
+    require_kb_access(topic["kb_id"], current_user)
+    topic_service.delete_topic(topic_id)
+    return {"id": topic_id, "deleted": True}
+
+
+# ===== 聊天会话（按用户归属，服务端持久化）=====
+@app.get("/sessions")
+def list_sessions(current_user: dict = Depends(get_current_user)):
+    """当前用户的全部会话（最近更新在前）。"""
+    return {"sessions": session_service.list_sessions(current_user["id"])}
+
+
+@app.post("/sessions")
+def create_session(request: CreateSessionRequest, current_user: dict = Depends(get_current_user)):
+    """为当前用户新建一个会话。"""
+    return session_service.create_session(current_user["id"], request.title)
+
+
+@app.patch("/sessions/{session_id}")
+def update_session(
+    session_id: int,
+    request: UpdateSessionRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """更新会话：改名（传 title）或切换收藏（toggle_favorite=true）。非本人会话 404。"""
+    if request.toggle_favorite:
+        result = session_service.toggle_favorite(session_id, current_user["id"])
+    elif request.title is not None:
+        result = session_service.rename_session(session_id, current_user["id"], request.title)
+    else:
+        raise HTTPException(status_code=400, detail="无更新内容：请提供 title 或 toggle_favorite")
+    if result is None:
+        raise HTTPException(status_code=404, detail="会话不存在或无权访问")
+    return result
+
+
+@app.delete("/sessions/{session_id}")
+def delete_session(session_id: int, current_user: dict = Depends(get_current_user)):
+    """删除会话及其消息。非本人会话 404。"""
+    ok = session_service.delete_session(session_id, current_user["id"])
+    if not ok:
+        raise HTTPException(status_code=404, detail="会话不存在或无权访问")
+    return {"id": session_id, "deleted": True}
+
+
+@app.get("/sessions/{session_id}/messages")
+def list_session_messages(session_id: int, current_user: dict = Depends(get_current_user)):
+    """会话内的消息列表（时间正序）。非本人会话 404。"""
+    messages = session_service.list_messages(session_id, current_user["id"])
+    if messages is None:
+        raise HTTPException(status_code=404, detail="会话不存在或无权访问")
+    return {"messages": messages}
+
+
+@app.post("/sessions/{session_id}/messages")
+def append_session_message(
+    session_id: int,
+    request: AppendMessageRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """向会话追加一条消息（user 或 assistant）。非本人会话 404。"""
+    result = session_service.append_message(
+        session_id=session_id,
+        user_id=current_user["id"],
+        role=request.role,
+        content=request.content,
+        sources=request.sources,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="会话不存在或无权访问")
+    return result
 
 
 @app.post("/rag/ask")
