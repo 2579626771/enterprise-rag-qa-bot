@@ -114,6 +114,15 @@ class CreateKbRequest(BaseModel):
     description: str = ""
 
 
+class UpdateKbRequest(BaseModel):
+    name: str
+    description: str = ""
+
+
+class UpdateQuotaRequest(BaseModel):
+    quota: int
+
+
 class QuotaRequestCreate(BaseModel):
     amount: int
     reason: str = ""
@@ -210,6 +219,26 @@ def delete_user(user_id: int, current_user: dict = Depends(require_admin)):
     return {"id": user_id, "deleted": True}
 
 
+@app.patch("/users/{user_id}/quota")
+def update_user_quota(user_id: int, request: UpdateQuotaRequest, _: dict = Depends(require_admin)):
+    """调整某用户的知识库配额上限（仅管理员）。
+    新配额不得低于该用户当前已用的知识库数量，否则 400。"""
+    target = user_service.get_by_id(user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    used = kb_service.count_by_owner(user_id)
+    if request.quota < used:
+        raise HTTPException(
+            status_code=400,
+            detail=f"配额不能低于该用户已用的知识库数（当前已用 {used}）",
+        )
+    try:
+        new_quota = user_service.set_quota(user_id, request.quota)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"id": user_id, "kb_quota": new_quota, "used": used}
+
+
 # ===== 知识库管理 =====
 def _purge_kb(kb_id: int) -> None:
     """彻底清除一个知识库：向量片段、元数据、物理文件目录、知识库记录本身。"""
@@ -258,6 +287,19 @@ def create_kb(request: CreateKbRequest, current_user: dict = Depends(get_current
         raise HTTPException(status_code=403, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    return kb
+
+
+@app.put("/kbs/{kb_id}")
+def update_kb(kb_id: int, request: UpdateKbRequest, current_user: dict = Depends(get_current_user)):
+    """更新知识库名称/描述（属主或管理员）。"""
+    require_kb_access(kb_id, current_user)
+    try:
+        kb = kb_service.update_kb(kb_id, request.name, request.description)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if kb is None:
+        raise HTTPException(status_code=404, detail="知识库不存在")
     return kb
 
 

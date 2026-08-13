@@ -19,9 +19,14 @@
       <div v-for="kb in kbList" :key="kb.id" class="kb-card">
         <div class="kb-card-top">
           <i class="fa-solid fa-book"></i>
-          <button class="op-link danger" type="button" title="删除知识库" @click="onDelete(kb)">
-            <i class="fa-solid fa-trash-can"></i>
-          </button>
+          <div class="kb-card-ops">
+            <button class="op-link" type="button" title="编辑知识库" @click="onEdit(kb)">
+              <i class="fa-solid fa-pen"></i>
+            </button>
+            <button class="op-link danger" type="button" title="删除知识库" @click="onDelete(kb)">
+              <i class="fa-solid fa-trash-can"></i>
+            </button>
+          </div>
         </div>
         <strong>{{ kb.name }}</strong>
         <p>{{ kb.description || '（无描述）' }}</p>
@@ -79,6 +84,33 @@
       </div>
     </div>
 
+    <!-- 编辑知识库弹窗 -->
+    <div v-if="showEdit" class="modal-mask" @click.self="showEdit = false">
+      <div class="modal">
+        <div class="modal-head">
+          <h3>编辑知识库</h3>
+          <button class="modal-close" type="button" @click="showEdit = false"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="detail-body">
+          <div class="form-row">
+            <label class="form-label req">名称</label>
+            <input v-model="editForm.name" class="text-input" placeholder="如：产品手册、内部制度" />
+          </div>
+          <div class="form-row">
+            <label class="form-label">描述</label>
+            <textarea v-model="editForm.description" class="textarea" rows="3" placeholder="选填"></textarea>
+          </div>
+          <p v-if="editErr" class="msg error">{{ editErr }}</p>
+        </div>
+        <div class="modal-foot">
+          <button class="btn-ghost" type="button" @click="showEdit = false">取消</button>
+          <button class="primary" type="button" :disabled="saving || !editForm.name.trim()" @click="onSaveEdit">
+            {{ saving ? '保存中…' : '保存修改' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- 申请配额弹窗 -->
     <div v-if="showRequest" class="modal-mask" @click.self="showRequest = false">
       <div class="modal">
@@ -112,6 +144,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import {
   createKb,
+  updateKb,
   deleteKb,
   submitQuotaRequest,
   myQuotaRequests,
@@ -131,6 +164,12 @@ const showCreate = ref(false)
 const creating = ref(false)
 const createErr = ref('')
 const form = reactive({ name: '', description: '' })
+
+const showEdit = ref(false)
+const saving = ref(false)
+const editErr = ref('')
+const editingId = ref<number | null>(null)
+const editForm = reactive({ name: '', description: '' })
 
 const showRequest = ref(false)
 const submitting = ref(false)
@@ -166,6 +205,31 @@ async function onCreate() {
     createErr.value = extractErrorMessage(e)
   } finally {
     creating.value = false
+  }
+}
+
+function onEdit(kb: KnowledgeBase) {
+  editingId.value = kb.id
+  editForm.name = kb.name
+  editForm.description = kb.description || ''
+  editErr.value = ''
+  showEdit.value = true
+}
+
+async function onSaveEdit() {
+  if (saving.value || editingId.value === null || !editForm.name.trim()) return
+  saving.value = true
+  editErr.value = ''
+  try {
+    await updateKb(editingId.value, editForm.name.trim(), editForm.description.trim())
+    showEdit.value = false
+    notice.value = '知识库已更新'
+    await refreshKbs()
+    window.setTimeout(() => (notice.value = ''), 2600)
+  } catch (e) {
+    editErr.value = extractErrorMessage(e)
+  } finally {
+    saving.value = false
   }
 }
 
@@ -228,6 +292,7 @@ onMounted(async () => {
 .kb-card { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
 .kb-card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .kb-card-top > i { font-size: 22px; color: var(--blue); }
+.kb-card-ops { display: flex; gap: 6px; }
 .kb-card strong { display: block; font-size: 15px; margin-bottom: 4px; }
 .kb-card p { margin: 0 0 8px; color: var(--muted); font-size: 13px; min-height: 18px; }
 .kb-card small { color: #9aa2a8; font-size: 12px; }

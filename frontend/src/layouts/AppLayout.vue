@@ -35,7 +35,9 @@
       <header class="topbar">
         <span>知识工作台 / <strong>{{ currentLabel }}</strong></span>
         <div class="top-actions">
-          <span class="service"><i></i>企业知识服务</span>
+          <router-link :to="{ name: 'guide' }" class="service service-link">
+            <i class="fa-solid fa-circle-question"></i>使用指南
+          </router-link>
           <div class="user-menu">
             <button type="button" @click="userMenuOpen = !userMenuOpen">
               {{ user?.display_name || user?.username }} <i class="fa-solid fa-chevron-down"></i>
@@ -89,3 +91,35 @@ function onLogout() {
   router.push({ name: 'login' })
 }
 </script>
+
+<style scoped>
+/* 顶栏「使用指南」入口：由原「企业知识服务」装饰文字改造为可点击链接。
+   覆盖全局 .service i 的绿点样式，让书本/问号图标正常显示。 */
+.service-link {
+  text-decoration: none;
+  color: var(--blue);
+  cursor: pointer;
+  padding: 5px 12px;
+  border-radius: 16px;
+  background: var(--blue-3);
+  font-size: 13px;
+  transition: background 0.15s, color 0.15s;
+}
+.service-link i {
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  font-size: 13px;
+  color: var(--blue);
+}
+.service-link:hover {
+  background: var(--blue);
+  color: #fff;
+}
+.service-link:hover i {
+  color: #fff;
+}
+</style>
+

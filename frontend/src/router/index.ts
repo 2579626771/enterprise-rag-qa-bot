@@ -8,7 +8,10 @@ import ChatView from '../views/ChatView.vue'
 import ArchiveView from '../views/ArchiveView.vue'
 import KbView from '../views/KbView.vue'
 import OverviewView from '../views/OverviewView.vue'
-import AdminKbView from '../views/AdminKbView.vue'
+import GuideView from '../views/GuideView.vue'
+import AdminUsersView from '../views/AdminUsersView.vue'
+import AdminUserKbsView from '../views/AdminUserKbsView.vue'
+import AdminKbDocsView from '../views/AdminKbDocsView.vue'
 import AccountView from '../views/AccountView.vue'
 import ReviewView from '../views/ReviewView.vue'
 import ConfigPlaceholder from '../views/ConfigPlaceholder.vue'
@@ -26,8 +29,11 @@ const routes: RouteRecordRaw[] = [
       { path: 'archive', name: 'archive', component: ArchiveView, meta: { label: '资料档案库' } },
       { path: 'kb', name: 'kb', component: KbView, meta: { label: '我的知识库' } },
       { path: 'overview', name: 'overview', component: OverviewView, meta: { label: '运行概览' } },
+      { path: 'guide', name: 'guide', component: GuideView, meta: { label: '使用指南' } },
       { path: 'config', name: 'config', component: ConfigPlaceholder, meta: { label: '检索配置' } },
-      { path: 'adminkb', name: 'adminkb', component: AdminKbView, meta: { label: '知识库管理', adminOnly: true } },
+      { path: 'adminkb', name: 'adminkb', component: AdminUsersView, meta: { label: '知识库管理', adminOnly: true } },
+      { path: 'adminkb/users/:userId', name: 'admin-user-kbs', component: AdminUserKbsView, props: true, meta: { label: '知识库管理', adminOnly: true } },
+      { path: 'adminkb/users/:userId/kbs/:kbId', name: 'admin-kb-docs', component: AdminKbDocsView, props: true, meta: { label: '知识库管理', adminOnly: true } },
       { path: 'account', name: 'account', component: AccountView, meta: { label: '账户管理', adminOnly: true } },
       { path: 'review', name: 'review', component: ReviewView, meta: { label: '申请审批', adminOnly: true } },
     ],

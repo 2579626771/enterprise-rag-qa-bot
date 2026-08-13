@@ -268,6 +268,18 @@ export async function deleteUser(userId: number): Promise<void> {
   await http.delete(`/users/${userId}`)
 }
 
+/** 调整某用户的知识库配额（仅管理员）。返回新配额与当前已用数。 */
+export async function setUserQuota(
+  userId: number,
+  quota: number,
+): Promise<{ id: number; kb_quota: number; used: number }> {
+  const { data } = await http.patch<{ id: number; kb_quota: number; used: number }>(
+    `/users/${userId}/quota`,
+    { quota },
+  )
+  return data
+}
+
 // ---- 知识库 ----
 
 export interface KnowledgeBase {
@@ -295,6 +307,16 @@ export async function listKbs(all = false): Promise<KbListResponse> {
 /** 新建知识库（受配额限制） */
 export async function createKb(name: string, description = ''): Promise<KnowledgeBase> {
   const { data } = await http.post<KnowledgeBase>('/kbs', { name, description })
+  return data
+}
+
+/** 更新知识库名称/描述（属主或管理员） */
+export async function updateKb(
+  kbId: number,
+  name: string,
+  description = '',
+): Promise<KnowledgeBase> {
+  const { data } = await http.put<KnowledgeBase>(`/kbs/${kbId}`, { name, description })
   return data
 }
 

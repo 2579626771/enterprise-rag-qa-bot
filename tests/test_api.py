@@ -238,6 +238,67 @@ class TestApi(unittest.TestCase):
         )
         self.assertEqual(r2.status_code, 200)
 
+    # ---- 需求1：更新知识库名称/描述 ----
+    def test_update_kb(self):
+        r = self.client.put(
+            f"/kbs/{self.kb_id}",
+            json={"name": "改名后的库", "description": "新描述"},
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["name"], "改名后的库")
+        self.assertEqual(r.json()["description"], "新描述")
+        # 落库确认
+        self.assertEqual(kb_service.get(self.kb_id)["name"], "改名后的库")
+
+    def test_update_kb_empty_name_rejected(self):
+        r = self.client.put(f"/kbs/{self.kb_id}", json={"name": "   "})
+        self.assertEqual(r.status_code, 400)
+
+    def test_update_others_kb_forbidden(self):
+        bob = user_service.create_user("bob", "bob123", role="user")
+        bob_kb = kb_service.create_kb(bob["id"], "bob库", "", enforce_quota=False)
+        bob_token = auth_service.create_access_token(bob)
+        # bob 改 admin 的库 → 403
+        r = self.client.put(
+            f"/kbs/{self.kb_id}",
+            json={"name": "越权改名"},
+            headers={"Authorization": f"Bearer {bob_token}"},
+        )
+        self.assertEqual(r.status_code, 403)
+        # bob 改自己的库 → 200
+        r2 = self.client.put(
+            f"/kbs/{bob_kb['id']}",
+            json={"name": "bob改名"},
+            headers={"Authorization": f"Bearer {bob_token}"},
+        )
+        self.assertEqual(r2.status_code, 200)
+
+    # ---- 需求4：管理员调整用户配额 ----
+    def test_admin_update_user_quota(self):
+        bob = user_service.create_user("bob", "bob123", role="user")
+        r = self.client.patch(f"/users/{bob['id']}/quota", json={"quota": 8})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["kb_quota"], 8)
+        self.assertEqual(user_service.get_quota(bob["id"]), 8)
+
+    def test_update_quota_below_used_rejected(self):
+        bob = user_service.create_user("bob", "bob123", role="user")
+        for i in range(2):
+            kb_service.create_kb(bob["id"], f"库{i}", enforce_quota=False)
+        # 已用 2 个，设成 1 应被拒
+        r = self.client.patch(f"/users/{bob['id']}/quota", json={"quota": 1})
+        self.assertEqual(r.status_code, 400)
+
+    def test_update_quota_requires_admin(self):
+        bob = user_service.create_user("bob", "bob123", role="user")
+        bob_token = auth_service.create_access_token(bob)
+        r = self.client.patch(
+            f"/users/{bob['id']}/quota",
+            json={"quota": 5},
+            headers={"Authorization": f"Bearer {bob_token}"},
+        )
+        self.assertEqual(r.status_code, 403)
+
 
 if __name__ == "__main__":
     unittest.main()

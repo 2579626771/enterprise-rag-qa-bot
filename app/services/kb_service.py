@@ -77,6 +77,15 @@ class InMemoryKbRepo:
         row = self._by_id.get(kb_id)
         return dict(row) if row else None
 
+    def update(self, kb_id: int, name: str, description: str) -> Optional[dict]:
+        row = self._by_id.get(kb_id)
+        if not row:
+            return None
+        row["name"] = name
+        row["description"] = description
+        row["updated_at"] = datetime.now()
+        return dict(row)
+
     def list_by_owner(self, owner_id: int) -> list[dict]:
         return [
             dict(r)
@@ -166,6 +175,23 @@ class MySQLKbRepo:
                 return cur.fetchone()
         finally:
             conn.close()
+
+    def update(self, kb_id: int, name: str, description: str) -> Optional[dict]:
+        conn = self._connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE knowledge_bases
+                       SET name = %s, description = %s, updated_at = %s
+                     WHERE id = %s
+                    """,
+                    (name, description, datetime.now(), kb_id),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get(kb_id)
 
     def list_by_owner(self, owner_id: int) -> list[dict]:
         conn = self._connect()
@@ -266,6 +292,15 @@ def create_kb(
 
 def get(kb_id: int) -> Optional[dict]:
     row = _get_repo().get(kb_id)
+    return _public(row) if row else None
+
+
+def update_kb(kb_id: int, name: str, description: str = "") -> Optional[dict]:
+    """更新知识库名称与描述。name 不能为空；返回更新后的公开视图，库不存在返回 None。"""
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("知识库名称不能为空")
+    row = _get_repo().update(kb_id, name, (description or "").strip())
     return _public(row) if row else None
 
 

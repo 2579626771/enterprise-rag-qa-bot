@@ -53,6 +53,24 @@ class TestKbService(unittest.TestCase):
         self.assertTrue(kb_service.delete(kb["id"]))
         self.assertEqual(kb_service.count_by_owner(self.user["id"]), 0)
 
+    def test_update_kb(self):
+        kb = kb_service.create_kb(self.user["id"], "旧名", "旧描述")
+        updated = kb_service.update_kb(kb["id"], "新名", "新描述")
+        self.assertEqual(updated["name"], "新名")
+        self.assertEqual(updated["description"], "新描述")
+        # 再取一次确认已持久化
+        again = kb_service.get(kb["id"])
+        self.assertEqual(again["name"], "新名")
+        self.assertEqual(again["description"], "新描述")
+
+    def test_update_kb_empty_name_rejected(self):
+        kb = kb_service.create_kb(self.user["id"], "库1")
+        with self.assertRaises(ValueError):
+            kb_service.update_kb(kb["id"], "   ")
+
+    def test_update_kb_missing_returns_none(self):
+        self.assertIsNone(kb_service.update_kb(9999, "x"))
+
     def test_ensure_default_kb_idempotent(self):
         first = kb_service.ensure_default_kb(self.user["id"])
         second = kb_service.ensure_default_kb(self.user["id"])

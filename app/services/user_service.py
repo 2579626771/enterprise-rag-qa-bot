@@ -417,6 +417,16 @@ def increase_quota(user_id: int, amount: int) -> int:
     return new_quota
 
 
+def set_quota(user_id: int, new_quota: int) -> int:
+    """直接设置某用户的知识库配额上限（管理员操作）。返回设置后的配额。
+    new_quota 会被夹到 >= 0；用户不存在抛 ValueError。"""
+    if get_by_id(user_id) is None:
+        raise ValueError("用户不存在")
+    new_quota = max(0, int(new_quota))
+    _get_repo().update_quota(user_id, new_quota)
+    return new_quota
+
+
 def verify_password(username: str, raw_password: str) -> Optional[dict]:
     """校验登录：账密正确返回用户公开视图，否则返回 None。"""
     row = _get_repo().get_by_username((username or "").strip())
