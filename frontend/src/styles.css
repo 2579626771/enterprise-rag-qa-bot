@@ -659,6 +659,7 @@ button { cursor: pointer; border: 0; background: none; }
   background: #f5f7fa;
 }
 .chart-grid.three { grid-template-columns: repeat(3, minmax(220px, 1fr)); margin-top: 4px; }
+.chart-grid.two-lg { grid-template-columns: repeat(2, minmax(260px, 1fr)); margin-top: 4px; }
 .chart-box.tall { height: 300px; padding: 14px; }
 .chart-box.tall h3 { font-size: 13px; margin-bottom: 8px; }
 .chart.big { height: 250px; }
@@ -670,6 +671,7 @@ button { cursor: pointer; border: 0; background: none; }
 @media (max-width: 760px) {
   .overview-page { padding: 16px; }
   .chart-grid.three { grid-template-columns: 1fr; }
+  .chart-grid.two-lg { grid-template-columns: 1fr; }
 }
 
 /* ===== 占位视图 ===== */

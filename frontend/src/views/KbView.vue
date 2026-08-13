@@ -16,21 +16,36 @@
     </div>
 
     <div class="kb-grid">
-      <div v-for="kb in kbList" :key="kb.id" class="kb-card">
+      <div
+        v-for="kb in kbList"
+        :key="kb.id"
+        class="kb-card"
+        role="button"
+        tabindex="0"
+        title="点击查看该知识库的文档"
+        @click="onOpen(kb)"
+        @keydown.enter="onOpen(kb)"
+      >
         <div class="kb-card-top">
           <i class="fa-solid fa-book"></i>
           <div class="kb-card-ops">
-            <button class="op-link" type="button" title="编辑知识库" @click="onEdit(kb)">
+            <button class="op-link" type="button" title="编辑知识库" @click.stop="onEdit(kb)">
               <i class="fa-solid fa-pen"></i>
             </button>
-            <button class="op-link danger" type="button" title="删除知识库" @click="onDelete(kb)">
+            <button class="op-link danger" type="button" title="删除知识库" @click.stop="onDelete(kb)">
               <i class="fa-solid fa-trash-can"></i>
             </button>
           </div>
         </div>
         <strong>{{ kb.name }}</strong>
         <p>{{ kb.description || '（无描述）' }}</p>
-        <small>创建于 {{ kb.created_at || '—' }}</small>
+        <div class="kb-card-foot">
+          <small>
+            <i class="fa-regular fa-file-lines"></i>
+            {{ docCounts[kb.id] ?? '—' }} 篇文档 · 创建于 {{ kb.created_at || '—' }}
+          </small>
+          <span class="kb-open-hint"><i class="fa-solid fa-folder-open"></i> 查看文档</span>
+        </div>
       </div>
       <div v-if="kbList.length === 0" class="kb-empty">还没有知识库，点右上角「新建知识库」</div>
     </div>
@@ -142,12 +157,14 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   createKb,
   updateKb,
   deleteKb,
   submitQuotaRequest,
   myQuotaRequests,
+  listDocuments,
   extractErrorMessage,
   type KnowledgeBase,
   type QuotaRequest,
@@ -156,9 +173,28 @@ import { useKnowledgeBase } from '../composables/useKnowledgeBase'
 
 const { kbList, quota, used, canCreate, refreshKbs, currentKbId, selectKb } = useKnowledgeBase()
 
+const router = useRouter()
+
 const error = ref('')
 const notice = ref('')
 const myRequests = ref<QuotaRequest[]>([])
+
+// 每个知识库的文档数（后端 /kbs 不含该字段，前端并行拉取、失败静默降级）
+const docCounts = ref<Record<number, number>>({})
+
+async function loadDocCounts() {
+  const list = kbList.value
+  await Promise.all(
+    list.map(async (kb) => {
+      try {
+        const docs = await listDocuments(kb.id)
+        docCounts.value[kb.id] = docs.length
+      } catch {
+        // 单个库失败不影响其它库，保持占位符
+      }
+    }),
+  )
+}
 
 const showCreate = ref(false)
 const creating = ref(false)
@@ -200,12 +236,18 @@ async function onCreate() {
     notice.value = '知识库创建成功'
     await refreshKbs()
     selectKb(kb.id)
+    void loadDocCounts()
     window.setTimeout(() => (notice.value = ''), 2600)
   } catch (e) {
     createErr.value = extractErrorMessage(e)
   } finally {
     creating.value = false
   }
+}
+
+/** 点击知识库卡片：进入该库的文档工作区（选中动作在详情页对齐全局状态） */
+function onOpen(kb: KnowledgeBase) {
+  router.push({ name: 'kb-docs', params: { kbId: kb.id } })
 }
 
 function onEdit(kb: KnowledgeBase) {
@@ -277,7 +319,7 @@ onMounted(async () => {
       error.value = extractErrorMessage(e)
     }
   }
-  await loadRequests()
+  await Promise.all([loadRequests(), loadDocCounts()])
 })
 </script>
 
@@ -289,13 +331,18 @@ onMounted(async () => {
 .head-actions { display: flex; gap: 10px; }
 .pill { font-size: 12px; padding: 2px 10px; border-radius: 10px; background: var(--blue-3); color: var(--blue); vertical-align: middle; }
 .kb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; margin-bottom: 26px; }
-.kb-card { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+.kb-card { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 16px; cursor: pointer; transition: box-shadow .15s, border-color .15s, transform .15s; }
+.kb-card:hover { border-color: var(--blue-2); box-shadow: 0 6px 18px rgba(30, 90, 160, 0.10); transform: translateY(-2px); }
+.kb-card:focus-visible { outline: 2px solid var(--blue-2); outline-offset: 2px; }
 .kb-card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .kb-card-top > i { font-size: 22px; color: var(--blue); }
 .kb-card-ops { display: flex; gap: 6px; }
 .kb-card strong { display: block; font-size: 15px; margin-bottom: 4px; }
 .kb-card p { margin: 0 0 8px; color: var(--muted); font-size: 13px; min-height: 18px; }
+.kb-card-foot { display: flex; justify-content: space-between; align-items: center; }
 .kb-card small { color: #9aa2a8; font-size: 12px; }
+.kb-open-hint { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--blue); opacity: 0; transition: opacity .15s; }
+.kb-card:hover .kb-open-hint { opacity: 1; }
 .kb-empty { color: var(--muted); grid-column: 1 / -1; padding: 30px; text-align: center; border: 1px dashed var(--line); border-radius: 12px; }
 .req-section { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
 .req-section h2 { margin: 0 0 12px; font-size: 16px; }

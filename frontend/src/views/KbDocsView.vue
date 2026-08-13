@@ -1,10 +1,25 @@
 <template>
   <main class="archive">
-    <!-- 页头 -->
+    <!-- 面包屑：返回知识库列表 -->
+    <div class="crumb">
+      <button class="crumb-back" type="button" @click="goList">
+        <i class="fa-solid fa-arrow-left"></i> 我的知识库
+      </button>
+      <span class="crumb-sep">/</span>
+      <span class="crumb-cur">
+        <i class="fa-solid fa-book"></i>
+        {{ currentKb ? currentKb.name : '知识库' }}
+      </span>
+    </div>
+
+    <!-- 页头：当前知识库名称 + 操作 -->
     <div class="archive-head">
       <div>
-        <h1>资料档案库 <span class="pill">文献资产工作区</span></h1>
-        <p>统一管理企业知识文档，跟踪解析入库状态</p>
+        <h1>{{ currentKb ? currentKb.name : '加载中…' }} <span class="pill">文档工作区</span></h1>
+        <p>
+          {{ currentKb?.description || '（无描述）' }}
+          <span class="head-count"> · 共 {{ rows.length }} 篇文档</span>
+        </p>
       </div>
       <div class="head-actions">
         <button class="btn-ghost" type="button" :disabled="loading" @click="refresh" title="刷新文档列表与片段统计">
@@ -13,17 +28,6 @@
         <button class="primary lg" type="button" @click="showUpload = true">
           <i class="fa-solid fa-upload"></i> 上传文档
         </button>
-      </div>
-    </div>
-
-    <!-- 统计卡片 -->
-    <div class="stat-cards">
-      <div v-for="c in statCards" :key="c.label" class="stat-card">
-        <div class="stat-icon"><i :class="c.icon"></i></div>
-        <div>
-          <strong>{{ c.value }}</strong>
-          <span>{{ c.label }}</span>
-        </div>
       </div>
     </div>
 
@@ -40,16 +44,8 @@
       </span>
     </button>
 
-    <!-- 筛选栏 -->
+    <!-- 筛选栏（已去掉知识库下拉：进来即锁定当前库）-->
     <div class="filter-bar">
-      <select
-        :value="currentKbId"
-        class="select"
-        title="当前知识库"
-        @change="onSelectKb(Number(($event.target as HTMLSelectElement).value))"
-      >
-        <option v-for="kb in kbList" :key="kb.id" :value="kb.id">📚 {{ kb.name }}</option>
-      </select>
       <select v-model="topicFilter" class="select">
         <option value="">全部分类</option>
         <option v-for="t in topics" :key="t" :value="t">{{ t }}</option>
@@ -210,6 +206,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   listDocuments,
   deleteDocument,
@@ -226,6 +223,10 @@ import { useKnowledgeBase } from '../composables/useKnowledgeBase'
 import { useTopics } from '../composables/useTopics'
 import UploadModal from '../components/UploadModal.vue'
 import UploadProgressModal from '../components/UploadProgressModal.vue'
+
+// 库详情：kbId 由路由参数传入（props: true）
+const props = defineProps<{ kbId: string }>()
+const router = useRouter()
 
 interface DocRow {
   filename: string
@@ -267,13 +268,6 @@ const keyword = ref('')
 const page = ref(1)
 const pageSize = 10
 
-const statCards = computed(() => [
-  { label: '文档总数', value: stats.value?.document_count ?? 0, icon: 'fa-regular fa-file-lines' },
-  { label: '知识片段', value: stats.value?.total_chunks ?? 0, icon: 'fa-solid fa-layer-group' },
-  { label: '分类数', value: distinctTopics.value, icon: 'fa-solid fa-tags' },
-  { label: '就绪文档', value: stats.value?.document_count ?? 0, icon: 'fa-solid fa-circle-check' },
-])
-
 const rows = computed<DocRow[]>(() => {
   const perDoc = stats.value?.per_document ?? []
   const chunkOf = (name: string) => perDoc.find((d) => d.filename === name)?.chunk_count ?? 0
@@ -286,17 +280,12 @@ const rows = computed<DocRow[]>(() => {
       chunk_count: chunks,
       topic: doc.topic,
       description: doc.description,
-      // 直接采用后端权威状态（处理中 / 就绪 / 失败），异步入库后由后台任务实时更新。
       status: doc.status,
       error: doc.error ?? '',
       uploadedAt: doc.uploaded_at,
     }
   })
 })
-
-const distinctTopics = computed(
-  () => new Set(rows.value.map((r) => r.topic).filter((t) => t && t !== '未分类')).size,
-)
 
 const filteredRows = computed(() =>
   rows.value.filter((r) => {
@@ -334,6 +323,10 @@ async function refresh() {
   }
 }
 
+function goList() {
+  router.push({ name: 'kb' })
+}
+
 function openDetail(row: DocRow) {
   detailRow.value = row
 }
@@ -360,7 +353,7 @@ async function onAddTopic() {
   try {
     await addTopic(name)
     newTopic.value = ''
-    await refresh() // 同步文档列表（分类下拉/筛选已由 useTopics 刷新）
+    await refresh()
   } catch (e) {
     topicErr.value = extractErrorMessage(e)
   } finally {
@@ -387,7 +380,7 @@ async function onSaveTopic(id: number) {
   try {
     await editTopic(id, name)
     cancelEditTopic()
-    await refresh() // 重命名联动了文档 topic，刷新表格
+    await refresh()
   } catch (e) {
     topicErr.value = extractErrorMessage(e)
   } finally {
@@ -442,7 +435,6 @@ async function onReload() {
 }
 
 function onUploaded(_filename: string) {
-  // 上传已交给后台任务，这里关闭上传弹窗并打开进度面板
   showUpload.value = false
   showProgress.value = true
 }
@@ -473,26 +465,47 @@ watch(completedTick, () => {
   refresh()
 })
 
-// 切换知识库后：重置分页并刷新
-watch(currentKbId, () => {
-  page.value = 1
-  refresh()
-})
-
-function onSelectKb(id: number) {
-  selectKb(id)
-}
-
-onMounted(async () => {
-  void ensureTopics()
-  // 确保知识库列表已加载（App 可能已加载，这里兜底），再拉当前库的文档
-  if (kbList.value.length === 0) {
-    try {
-      await refreshKbs()
-    } catch (e) {
-      error.value = extractErrorMessage(e)
+// 切换库（含路由参数变化）后：重置分页、对齐全局当前库、刷新
+watch(
+  () => props.kbId,
+  async (val) => {
+    const id = Number(val)
+    if (!id) return
+    page.value = 1
+    if (kbList.value.length === 0) {
+      try {
+        await refreshKbs()
+      } catch (e) {
+        error.value = extractErrorMessage(e)
+      }
     }
-  }
-  await refresh()
+    // 校验归属：库不存在（无权限/已删除）则退回列表
+    if (!kbList.value.some((k) => k.id === id)) {
+      error.value = '知识库不存在或无权访问'
+      router.replace({ name: 'kb' })
+      return
+    }
+    // 对齐全局当前库：上传弹窗 / 分类 / 上传任务都依赖 currentKbId
+    selectKb(id)
+    await refresh()
+  },
+  { immediate: true },
+)
+
+onMounted(() => {
+  void ensureTopics()
 })
 </script>
+
+<style scoped>
+.crumb { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; font-size: 13px; flex-wrap: wrap; }
+.crumb-back {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--blue-3); color: var(--blue);
+  border: none; border-radius: 8px; padding: 6px 12px; cursor: pointer; transition: background .15s;
+}
+.crumb-back:hover { background: #dbe6f2; }
+.crumb-sep { color: var(--muted); }
+.crumb-cur { display: inline-flex; align-items: center; gap: 6px; color: #3a4147; font-weight: 600; }
+.head-count { color: var(--muted); }
+</style>

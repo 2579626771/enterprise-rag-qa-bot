@@ -5,8 +5,8 @@ import AppLayout from '../layouts/AppLayout.vue'
 import LoginView from '../views/LoginView.vue'
 import RegisterView from '../views/RegisterView.vue'
 import ChatView from '../views/ChatView.vue'
-import ArchiveView from '../views/ArchiveView.vue'
 import KbView from '../views/KbView.vue'
+import KbDocsView from '../views/KbDocsView.vue'
 import OverviewView from '../views/OverviewView.vue'
 import GuideView from '../views/GuideView.vue'
 import AdminUsersView from '../views/AdminUsersView.vue'
@@ -26,8 +26,8 @@ const routes: RouteRecordRaw[] = [
     children: [
       { path: '', redirect: '/chat' },
       { path: 'chat', name: 'chat', component: ChatView, meta: { label: '智能问答' } },
-      { path: 'archive', name: 'archive', component: ArchiveView, meta: { label: '资料档案库' } },
       { path: 'kb', name: 'kb', component: KbView, meta: { label: '我的知识库' } },
+      { path: 'kb/:kbId', name: 'kb-docs', component: KbDocsView, props: true, meta: { label: '我的知识库' } },
       { path: 'overview', name: 'overview', component: OverviewView, meta: { label: '运行概览' } },
       { path: 'guide', name: 'guide', component: GuideView, meta: { label: '使用指南' } },
       { path: 'config', name: 'config', component: ConfigPlaceholder, meta: { label: '检索配置' } },

@@ -1,4 +1,14 @@
-"""一次性迁移：把旧的 data/documents/{kb_id}/ 目录搬到新的
+"""【已废弃 · 请勿运行】把旧的 data/documents/{kb_id}/ 目录搬到
+data/documents/{用户名}/{知识库名}_{kb_id}/ 层级结构。
+
+⚠ 弃用说明（2026-08）：
+    本脚本产生的「{用户名}/{库名}_{kb_id}/」命名，因目录名内嵌库名，导致
+    「知识库改名后按新名找不到旧目录、文档消失」的严重问题。现已改为末层只用
+    kb_id 的方案（{用户名}/{kb_id}/，见 document_service.kb_documents_dir）。
+    请改用 scripts/migrate_kbid_dirs.py 迁移，切勿再运行本脚本，否则会把目录
+    退回到有 bug 的「带库名」结构。保留此文件仅作历史记录。
+
+一次性迁移：把旧的 data/documents/{kb_id}/ 目录搬到新的
 data/documents/{用户名}/{知识库名}_{kb_id}/ 层级结构。
 
 背景：多知识库改造早期，文件按 kb_id 平铺存放（如 6/ 7/ 8/ 13/），人工查看时
@@ -57,6 +67,14 @@ def _plan_moves():
 
 
 def main() -> None:
+    # 运行时护栏：此脚本已废弃（会把目录退回到「带库名」的有 bug 结构）。
+    # 必须显式传 --force-deprecated 才会执行，防止误运行。
+    if "--force-deprecated" not in sys.argv:
+        print("[已废弃] 本脚本会把目录退回到「{用户名}/{库名}_{kb_id}」的有 bug 结构，已停用。")
+        print("请改用：python -m scripts.migrate_kbid_dirs --apply")
+        print("（如确需运行历史逻辑，加 --force-deprecated 强制执行，风险自负）")
+        return
+
     skip_confirm = "--yes" in sys.argv
     moves = _plan_moves()
 

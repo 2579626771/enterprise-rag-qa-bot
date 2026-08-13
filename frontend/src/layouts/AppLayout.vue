@@ -70,7 +70,6 @@ const userMenuOpen = ref(false)
 // 侧栏导航项：name 对应路由名，与 router/index.ts 保持一致。
 const navItems: Array<{ name: string; label: string; icon: string; adminOnly?: boolean }> = [
   { name: 'chat', label: '智能问答', icon: 'fa-solid fa-comments' },
-  { name: 'archive', label: '资料档案库', icon: 'fa-solid fa-folder-open' },
   { name: 'kb', label: '我的知识库', icon: 'fa-solid fa-book' },
   { name: 'overview', label: '运行概览', icon: 'fa-solid fa-chart-pie' },
   { name: 'config', label: '检索配置', icon: 'fa-solid fa-sliders' },

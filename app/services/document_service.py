@@ -6,12 +6,29 @@ SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf", ".docx"}
 
 def read_text_file(file_path:str) -> str:
     path = Path(file_path)
-    return path.read_text(encoding="utf-8")
+    raw = path.read_bytes()
+    # 编码兜底：优先 UTF-8（含带 BOM 的 utf-8-sig），失败再尝试国内常见的 GBK/GB18030，
+    # 全部失败则用 UTF-8 宽容解码（忽略非法字节），避免非 UTF-8 的 txt 直接入库失败。
+    for enc in ("utf-8-sig", "utf-8", "gb18030"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="ignore")
 
 def _read_pdf_file(file_path: str) -> str:
     from pypdf import PdfReader
 
     reader = PdfReader(file_path)
+    # 加密 PDF：AES 加密的空口令文档，装了 cryptography 后可直接解密读取；
+    # 若为口令保护（需密码）则解密失败，给出可读提示而非底层报错。
+    if reader.is_encrypted:
+        try:
+            reader.decrypt("")
+        except Exception as exc:
+            raise ValueError(
+                "该 PDF 已加密且需要密码，无法解析。请上传去除密码保护后的版本。"
+            ) from exc
     pages = [page.extract_text() or "" for page in reader.pages]
     return "\n\n".join(p.strip() for p in pages if p.strip())
 
@@ -19,8 +36,15 @@ def _read_docx_file(file_path: str) -> str:
     from docx import Document as DocxDocument
 
     doc = DocxDocument(file_path)
-    paragraphs = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
-    return "\n\n".join(paragraphs)
+    blocks = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+    # 补充表格文本：很多 docx（安装手册、问题汇总等）正文放在表格里，
+    # 只读 paragraphs 会漏掉，导致提取内容极少甚至为空、被判为「内容为空」失败。
+    for table in doc.tables:
+        for row in table.rows:
+            cells = [c.text.strip() for c in row.cells if c.text.strip()]
+            if cells:
+                blocks.append(" | ".join(cells))
+    return "\n\n".join(blocks)
 
 def read_document_file(file_path: str) -> str:
     suffix = Path(file_path).suffix.lower()
@@ -236,10 +260,11 @@ def _sanitize_path_segment(name: str, fallback: str = "unnamed") -> str:
 
 
 def kb_documents_dir(kb_id: int) -> Path:
-    """某个知识库的文件目录：DOCUMENTS_DIR/{用户名}/{知识库名}_{kb_id}/。
+    """某个知识库的文件目录：DOCUMENTS_DIR/{用户名}/{kb_id}/。
 
-    多知识库隔离后，每个库的文件物理分目录存放。目录名用「用户名/库名_kbid」
-    便于人工在文件系统里辨认；末尾的 _kbid 保证同名库不冲突、天然唯一。
+    多知识库隔离后，每个库的文件物理分目录存放。目录名用「用户名/kb_id」，
+    以「用户名」便于人工在文件系统里辨认归属，末层用纯 kb_id 保证：
+    知识库改名时路径不变——因此改名不会再导致文档「找不到」。
     需要时自动创建目录。
 
     降级兜底：查不到知识库或 DB 不可用时，回退到 DOCUMENTS_DIR/{kb_id}/，
@@ -259,7 +284,7 @@ def kb_documents_dir(kb_id: int) -> Path:
             directory = (
                 base
                 / _sanitize_path_segment(username, fallback=f"user{kb['owner_id']}")
-                / f"{_sanitize_path_segment(kb['name'], fallback='kb')}_{kb_id}"
+                / str(kb_id)
             )
             directory.mkdir(parents=True, exist_ok=True)
             return directory

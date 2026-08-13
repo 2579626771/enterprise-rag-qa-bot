@@ -5,16 +5,16 @@ from urllib import request
 from urllib.error import URLError, HTTPError
 from app.schemas.embedding import Embedding
 from app.schemas.document_chunk import DocumentChunk
-from app.config import EMBEDDING_PROVIDER,ALIYUN_API_KEY, ALIYUN_EMBEDDING_MODEL
+from app.config import EMBEDDING_PROVIDER,ALIYUN_API_KEY, ALIYUN_EMBEDDING_MODEL, EMBEDDING_CONCURRENCY
 
 # 向量化 HTTP 请求的健壮性参数。
 # 阿里云 embedding 接口是远程 HTTP 服务，网络抖动 / keep-alive 连接被中途关闭时，
 # response.read() 会抛 IncompleteRead（“已读 N 字节，还差 M 字节”）——这正是
 # “上传成功但入库失败”的真正原因：文件已落盘，但向量化那一步的 HTTP 响应被截断。
 # 单次失败不该让整份文档入库失败，所以这里对可重试的网络错误做指数退避重试。
-_HTTP_MAX_RETRIES = 4          # 总尝试次数 = 1 + 重试；含首次共 4 次
-_HTTP_BACKOFF_BASE = 1.0       # 退避基数（秒）：1s, 2s, 4s ...
-_HTTP_TIMEOUT = 60             # 单次请求超时（秒）
+_HTTP_MAX_RETRIES = 5          # 总尝试次数 = 1 + 重试；含首次共 5 次
+_HTTP_BACKOFF_BASE = 1.0       # 退避基数（秒）：1s, 2s, 4s, 8s ...
+_HTTP_TIMEOUT = 120            # 单次请求超时（秒）：大批文本向量化耗时更长，给足余量
 
 
 def _post_json_with_retry(url: str, payload: dict) -> dict:
@@ -144,12 +144,45 @@ EMBEDDING_BATCH_SIZE = 10
 def _create_aliyun_embeddings_batched(
         chunks: list[DocumentChunk],
 ) -> list[Embedding]:
-    embeddings: list[Embedding] = []
-    for start in range(0, len(chunks), EMBEDDING_BATCH_SIZE):
-        batch = chunks[start:start + EMBEDDING_BATCH_SIZE]
+    """把 chunks 分批向量化，并用线程池并发发送各批次以缩短墙钟时间。
+
+    向量化是纯 I/O（等阿里云 HTTP 响应），串行时 N 批就是 N 次往返顺序累加——
+    大文档（几十批）因此很慢。这里用线程池并发多个批次，总耗时约降到 1/并发度。
+
+    正确性保证：
+    - 保序：每批带原始批次序号提交，结果按序号回填后再展开，最终与输入 chunk 一一对齐。
+    - 失败语义不变：任一批彻底失败（重试耗尽）仍向上抛出，让整篇文档判为「失败」，
+      与原串行实现一致，不会把半份文档静默入库。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    # 切成批次，保留每批的原始序号用于回填。
+    batches = [
+        chunks[start:start + EMBEDDING_BATCH_SIZE]
+        for start in range(0, len(chunks), EMBEDDING_BATCH_SIZE)
+    ]
+    if not batches:
+        return []
+
+    # 并发度不超过实际批次数，避免创建多余线程。
+    workers = max(1, min(EMBEDDING_CONCURRENCY, len(batches)))
+
+    def _embed_batch(batch: list[DocumentChunk]) -> list[Embedding]:
         vectors = create_aliyun_embedding_vectors([c.content for c in batch])
-        for chunk, vector in zip(batch, vectors):
-            embeddings.append(Embedding(chunk_id=chunk.id, vector=vector))
+        return [Embedding(chunk_id=c.id, vector=v) for c, v in zip(batch, vectors)]
+
+    if workers == 1:
+        # 单批或并发度=1：直接串行，省去线程池开销。
+        results = [_embed_batch(b) for b in batches]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            # executor.map 按输入顺序返回结果，天然保序；任一批抛异常会在迭代时向上抛出。
+            results = list(executor.map(_embed_batch, batches))
+
+    # 按批次顺序展开成扁平列表，与输入 chunks 顺序一致。
+    embeddings: list[Embedding] = []
+    for batch_embeddings in results:
+        embeddings.extend(batch_embeddings)
     return embeddings
 
 # 兼容旧名字：老代码/老测试如果还调用 create_fake_embeddings_for_chunks，仍然能用。

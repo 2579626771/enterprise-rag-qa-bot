@@ -28,3 +28,6 @@ Thumbs.db
 # （避免 git 仓库被文档/向量库撑大；文件仍正常存在磁盘上，程序照常读写）
 data/documents/
 data/chroma/
+
+# 运行时文档备份目录（迁移脚本产生，不进仓库）
+data/documents.bak_*/

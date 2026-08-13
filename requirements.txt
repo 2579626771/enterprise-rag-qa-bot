@@ -4,6 +4,9 @@ httpx
 python-multipart
 chromadb
 pypdf
+# 解密加密 PDF（AES）需要：pypdf 解析受口令/加密保护的 PDF 时依赖它，
+# 缺失会报「cryptography>=3.1 is required for AES algorithm」导致 PDF 入库失败。
+cryptography>=3.1
 python-docx
 # MySQL 驱动：纯 Python 实现，无需编译，内网友好。
 # 用于持久化文档元数据（分类/描述/上传时间/状态），替换前端 localStorage。

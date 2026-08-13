@@ -170,7 +170,7 @@ async function send() {
   if (!question || asking.value) return
   if (!currentKbId.value) {
     const sid = await ensureCurrent()
-    await appendMessage(sid, { role: 'assistant', content: '请先在「资料档案库」选择或创建一个知识库。' })
+    await appendMessage(sid, { role: 'assistant', content: '请先在「我的知识库」选择或创建一个知识库。' })
     return
   }
 

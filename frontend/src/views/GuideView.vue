@@ -42,7 +42,7 @@
           <ol class="steps">
             <li><strong>注册 / 登录</strong>：首次使用点登录页的「注册一个」，创建你的账号。</li>
             <li><strong>新建知识库</strong>：进入左侧「我的知识库」，点「新建知识库」，给它起个名字（如「产品手册」）。</li>
-            <li><strong>上传文档</strong>：进入「资料档案库」，切到目标知识库，点「上传文档」，选择文件并填写主题分类。</li>
+            <li><strong>上传文档</strong>：在「我的知识库」点开目标知识库卡片，进入文档工作区，点「上传文档」，选择文件并填写主题分类。</li>
             <li><strong>开始问答</strong>：进入「智能问答」，选好知识库，直接用中文提问即可。</li>
           </ol>
         </section>
@@ -61,7 +61,8 @@
           <p>在「我的知识库」页你可以：</p>
           <ul class="bullet">
             <li><strong>新建</strong>：不同用途的资料建议分库管理，问答更聚焦、更准。</li>
-            <li><strong>编辑</strong>：点知识库卡片上的「铅笔」图标，可随时修改名称与描述。</li>
+            <li><strong>查看/管理文档</strong>：<strong>点开知识库卡片</strong>即可进入该库的文档工作区，在这里上传、搜索、按分类筛选、查看详情与删除文档，左上角面包屑可返回列表。</li>
+            <li><strong>编辑</strong>：点知识库卡片上的「铅笔」图标，可随时修改名称与描述（改名不影响已上传的文档）。</li>
             <li><strong>删除</strong>：点「垃圾桶」图标，会连带清除其中所有文档与向量，<strong>不可恢复</strong>，请谨慎。</li>
           </ul>
           <div class="tip">
@@ -73,7 +74,7 @@
         <section :id="ids.upload" class="doc-sec">
           <h2><i class="fa-solid fa-file-arrow-up"></i> 上传文档</h2>
           <p>
-            在「资料档案库」上传。目前支持 <strong>TXT / Markdown / PDF / Word(docx)</strong>。
+            在「我的知识库」点开某个知识库进入其文档工作区上传。目前支持 <strong>TXT / Markdown / PDF / Word(docx)</strong>。
             上传后文档会异步入库，状态从「处理中」变为「就绪」即可用于问答。
           </p>
           <ul class="bullet">

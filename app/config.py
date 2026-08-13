@@ -35,6 +35,9 @@ APP_ENV = _env.get("APP_ENV","development")
 EMBEDDING_PROVIDER = _env.get("EMBEDDING_PROVIDER", "aliyun")
 ALIYUN_API_KEY = _env.get("ALIYUN_API_KEY", "")
 ALIYUN_EMBEDDING_MODEL = _env.get("ALIYUN_EMBEDDING_MODEL","qwen3.7-text-embedding")
+# 向量化并发度：大文档分多批调用阿里云 embedding，串行时批次逐个累加很慢。
+# 用线程池并发发多个批次，墙钟时间约缩短为原来的 1/N。取值不宜过大以免触发限流。
+EMBEDDING_CONCURRENCY = int(_env.get("EMBEDDING_CONCURRENCY", "5"))
 ANSWER_PROVIDER = _env.get("ANSWER_PROVIDER","deepseek")
 DEEPSEEK_API_KEY = _env.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_CHAT_MODEL=_env.get("DEEPSEEK_CHAT_MODEL","deepseek-v4-pro")
