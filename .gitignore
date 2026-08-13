@@ -1,0 +1,30 @@
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Virtual environments
+.venv/
+venv/
+
+# Python cache and test cache
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local editor/tooling files
+.vscode/
+.idea/
+
+# Logs and temporary files
+*.log
+logs/
+.DS_Store
+Thumbs.db
+
+# 运行时数据：上传的文档与向量库，属于运行产生的数据，不进仓库。
+# （避免 git 仓库被文档/向量库撑大；文件仍正常存在磁盘上，程序照常读写）
+data/documents/
+data/chroma/

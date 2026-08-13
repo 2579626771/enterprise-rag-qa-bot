@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+httpx
+python-multipart
+chromadb
+pypdf
+python-docx
+# MySQL 驱动：纯 Python 实现，无需编译，内网友好。
+# 用于持久化文档元数据（分类/描述/上传时间/状态），替换前端 localStorage。
+PyMySQL
+# 认证：bcrypt 做密码哈希，PyJWT 签发/校验登录令牌。均为纯 Python，内网友好。
+bcrypt
+PyJWT
+# 内网环境需要：让 Python 使用 Windows 系统证书库，
+# 解决公司安全网关拦截 HTTPS 导致的 SSL 证书验证失败问题。
+pip-system-certs

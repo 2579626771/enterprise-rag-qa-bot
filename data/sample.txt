@@ -1,0 +1,6 @@
+这是一个用于测试 RAG 文档读取功能的示例文本。
+在本项目中，可以使用 read_text_file(file_path) 函数读取 txt 文档内容。
+这个函数会使用 UTF-8 编码读取文件，并返回字符串。
+
+读取到文本后，可以使用 create_document_from_file(document_id, file_path) 创建 Document 对象。
+然后可以使用 split_document_into_chunks(document, chunk_size, overlap) 把文档切分成多个 chunks。

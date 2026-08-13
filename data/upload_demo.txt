@@ -1,0 +1,7 @@
+上传文档测试说明
+
+这个文档用于测试通过 API 上传后再进行 RAG 问答。
+
+在本系统中，用户可以通过 POST /documents/upload 上传 txt 文档。
+上传成功后，系统会返回 file_path。
+随后用户可以把这个 file_path 传给 POST /rag/ask 接口进行问答。
