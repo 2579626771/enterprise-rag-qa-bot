@@ -273,6 +273,3 @@ python -m unittest discover -s tests
 
 ---
 
-## 说明
-
-本项目用于学习 Python 项目结构、FastAPI 后端、Vue 前端、JWT 认证、多租户隔离、文档解析与切分、向量数据库、RAG 检索问答与企业级知识库设计。
