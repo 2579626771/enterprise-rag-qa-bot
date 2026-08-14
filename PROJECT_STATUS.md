@@ -113,20 +113,14 @@ cd frontend && npm run dev   # http://localhost:5173
 
 ---
 
-## 5. ⚠️ 未提交改动（08-14 晚：阶段5 检索配置页）
+## 5. ✅ 提交状态（已全部落袋）
 
-08-14 白天的一批（研判/徽标/选择器）**已提交**为 `078fe3b`。当前未提交的是**阶段5 检索配置页**：
-- 新增：`app/services/retrieval_config_service.py`、`tests/test_retrieval_config_service.py`、
-  `frontend/src/components/ConfigForm.vue`
-- 修改：`app/api.py`、`app/services/{answer,rag}_service.py`、
-  `frontend/src/api/client.ts`、`frontend/src/views/ConfigPlaceholder.vue`、`tests/test_rag_service.py`
-- 追加：保存结果弹窗（成功/失败都弹）+ 按级别正确文案（系统级=所有用户；租户/kb 级=仅自己）。
-  已真机验证：管理员改系统默认、普通用户改租户默认均保存成功并弹窗。
+- `078fe3b` 研判/徽标/选择器（08-14 白天）——已提交
+- `c624191` **阶段5 检索配置页**（系统/租户/知识库三级参数在线可调，存 MySQL）——**已提交**，
+  10 文件 +1391 行，184 测试全绿，工作树干净。
+- 本地 `master` 领先 `origin/main` 2 个 commit，尚未 `git push`（等确认后再推）。
 
-建议提交信息主题：`feat: 检索配置页（系统/租户/知识库三级参数在线可调，存 MySQL）`
-
-**提交前建议**：启动前后端真机点一遍（管理员改系统默认→保存刷新仍在；某库设独立阈值→问答日志阈值变化；
-普通用户读不到他人库配置）。
+> 下一战场：**检索质量专线 — 阶段3 Rerank**（详见 §4.A）。
 
 ---
 
