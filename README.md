@@ -2,9 +2,9 @@
 
 一个从 0 用 Python + Vue 构建的**多租户全栈 RAG（检索增强生成）**知识库系统：上传文档 → 自动切分向量化入库 → 知识库内语义检索 → 大模型基于检索结果作答，并标注来源片段，做到「可追溯、有依据」。
 
-在基础问答之上，系统还提供 **JWT 登录认证、用户管理、多知识库隔离、知识库配额申请与审批、服务端会话历史、管理员控制台**，是一套贴近企业实际的知识库平台。
+在基础问答之上，系统还提供 **JWT 登录认证、用户管理、多知识库隔离、知识库配额申请与审批、服务端会话历史、管理员控制台**，并针对企业最痛的两点做了强化：**答案层「研判」防幻觉**（作答前先让 LLM 判断「资料是否真能回答」，不能答则明确拒答）与 **三级检索配置**（系统 / 租户 / 知识库参数在线可调）。是一套贴近企业实际的知识库平台。
 
-后端 FastAPI + ChromaDB + MySQL，接入阿里云百炼 Embedding 与 DeepSeek 回答模型；前端 Vue 3 + Vite + TypeScript + Element Plus 工作台界面。
+后端 FastAPI + ChromaDB + MySQL，接入阿里云百炼 Embedding 与 DeepSeek 回答模型，检索增强层由 LangChain 承接；前端 Vue 3 + Vite + TypeScript + Element Plus 工作台界面。
 
 ---
 
@@ -23,7 +23,19 @@
 **问答**
 - 知识库内语义检索问答，回答标注来源片段（文件名 + 第几段，可展开查看原文）
 - 相似度距离阈值过滤，避免对无关问题硬凑答案
+- **答案层「研判」防幻觉**：作答前先让 LLM 判断「资料是否真能回答该问题」，不能答则明确拒答，治「主题相关但库里没答案」导致的幻觉；拒答 / 低可信在前端有徽标提示，且随会话持久化。评测实证幻觉风险 91.7%→8.3%、正例零误伤。可用 `JUDGE_ENABLED` 一键降级。
+- **知识库范围选择器**：问答页可选「全部 / 指定库」。普通用户「全部」= 只查自己所有库（严格隔离，绝不跨租户），管理员「全部」= 真全库。
 - **会话管理**：历史会话、新建、收藏、重命名、删除——**服务端 MySQL 持久化**，换浏览器 / 设备后历史仍在，且按用户隔离
+
+**检索配置（三级在线可调）**
+- 系统默认 / 租户默认 / 按知识库三级配置：`top_k`、距离阈值、研判开关、作答提示词等在线可调，存 MySQL，**改后即生效，无需改 `.env` 重启**
+- 多 / 全库查询用哪份配置由租户偏好决定；三级解析 `kb → tenant → system → 硬默认`
+
+**检索质量增强（评测驱动、默认关、可一键开）**
+- **LangChain 适配层**：阿里云 Embedding 包成 LangChain `Embeddings`、Chroma 召回接 `langchain_chroma`，作为增强层地基，距离语义零漂移、指标与原生一致
+- **Rerank 重排**（阿里云 gte-rerank-v2）：召回后重排候选、保留原距离；本库评测证明整体伤召回（Hit@5 94.7%→89.5%），**默认关**、代码保留
+- **多查询改写**（DeepSeek）：把原问题改写成 N 条语义等价查询，多路召回合并去重；评测正向（MRR 0.776→0.807、Hit@5 零误伤），因慢（多一次 LLM 调用）**默认关**、可手动开
+- 所有增强项均：失败自动降级、不中断检索、**不扩大检索范围（隔离红线不受影响）**
 
 **资料档案库**
 - 文档列表（统计卡 + 表格 + 分类筛选 + 搜索 + 分页）
@@ -51,6 +63,8 @@
 | 认证 | JWT（PyJWT）、bcrypt 密码哈希 |
 | Embedding | 阿里云百炼 |
 | 回答模型 | DeepSeek |
+| 研判 / 改写 | DeepSeek（研判经 LangChain `ChatOpenAI`，防幻觉） |
+| 检索增强 | LangChain（`langchain_chroma` 召回适配）、阿里云 gte-rerank-v2（重排） |
 | 文档解析 | pypdf（PDF）、python-docx（Word） |
 | 前端 | Vue 3、Vite、TypeScript、axios、ECharts、Element Plus、Font Awesome |
 
@@ -63,27 +77,32 @@
 ```
 enterprise-rag-qa-bot-main/
 ├── app/                      # 后端
-│   ├── api.py                # FastAPI 路由（35 个端点：认证/用户/知识库/配额/文档/问答/会话/主题/运维）
+│   ├── api.py                # FastAPI 路由（认证/用户/知识库/配额/文档/问答/会话/主题/检索配置/运维）
 │   ├── config.py             # 读取 .env 配置
 │   ├── services/
 │   │   ├── document_service.py         # 文档解析、切分（多格式 + 长度控制）
 │   │   ├── embedding_service.py        # 向量化（阿里云）
-│   │   ├── knowledge_base_service.py   # 向量库读写、检索、对账、重载（按 kb_id 隔离）
+│   │   ├── knowledge_base_service.py   # 向量库读写、检索、对账、重载（按 kb_id 隔离；接多查询/rerank）
 │   │   ├── vector_store_service.py     # 底层向量存取工具
-│   │   ├── rag_service.py              # 知识库问答编排（检索 + 阈值过滤 + 生成）
-│   │   ├── answer_service.py           # 调 DeepSeek 生成回答
+│   │   ├── langchain_adapters.py       # LangChain 适配层（Aliyun Embeddings + langchain_chroma 召回）
+│   │   ├── rag_service.py              # 知识库问答编排（检索 + 阈值过滤 + 研判 + 生成）
+│   │   ├── answer_service.py           # 调 DeepSeek 生成回答（支持自定义作答提示词）
+│   │   ├── judge_service.py            # 答案层「研判」防幻觉（LangChain ChatOpenAI + DeepSeek）
+│   │   ├── rerank_service.py           # rerank 重排（阿里云 gte-rerank-v2，默认关）
+│   │   ├── query_rewrite_service.py    # 多查询改写（DeepSeek，默认关）
+│   │   ├── retrieval_config_service.py # 三级检索配置（系统/租户/知识库，存 MySQL）
 │   │   ├── auth_service.py             # JWT 签发 / 校验
 │   │   ├── user_service.py             # 用户 CRUD、密码校验、默认管理员
 │   │   ├── kb_service.py               # 知识库 CRUD、配额限制
 │   │   ├── quota_service.py            # 配额申请与审批
 │   │   ├── metadata_service.py         # 文档元数据（MySQL，双仓库+自动降级）
-│   │   ├── session_service.py          # 会话历史（MySQL，按用户归属）
+│   │   ├── session_service.py          # 会话历史（MySQL，按用户归属，含研判 verdict）
 │   │   └── topic_service.py            # 主题分类（MySQL，按知识库隔离，属主可增删改查）
 │   └── schemas/              # 数据模型
 ├── frontend/                 # 前端（Vue 3 + Vite）
 │   ├── src/
-│   │   ├── views/            # Login/Register/Chat/Archive/Overview/Account/Guide/Review + Admin* 等 13 个
-│   │   ├── components/       # UploadModal / UploadProgressModal
+│   │   ├── views/            # Login/Register/Chat/Archive/Overview/Account/Guide/Review + Admin* 等
+│   │   ├── components/       # UploadModal / UploadProgressModal / ConfigForm
 │   │   ├── composables/      # useAuth / useKnowledgeBase / useSessions / useTopics / useUploadTasks
 │   │   ├── layouts/          # AppLayout
 │   │   ├── router/           # 路由 + 登录守卫
@@ -92,8 +111,9 @@ enterprise-rag-qa-bot-main/
 ├── data/
 │   ├── documents/            # 上传的文档（按 用户/知识库 分目录）
 │   └── chroma/               # 向量库持久化
-├── scripts/                  # 数据迁移脚本（目录结构 / 多知识库）
-├── tests/                    # 后端测试（unittest，159 个）
+├── eval/                     # 检索/研判评测集与 before/after 结果
+├── scripts/                  # 数据迁移 + 评测脚本（eval_retrieval / eval_answer）
+├── tests/                    # 后端测试（unittest，200 个）
 ├── requirements.txt
 ├── 启动后端.bat              # 一键启动后端
 └── .env.example
@@ -118,9 +138,12 @@ python -m pip install -r requirements.txt
 **3. 配置环境变量**：复制 `.env.example` 为 `.env`，填入真实 API Key 与 MySQL 连接信息。
 
 > - 真实 Key 只写在 `.env`，切勿写入代码或提交仓库。
-> - **MySQL**：库本身需先存在（`utf8mb4`），后端启动时自动建表（`documents` / `chat_sessions` / `chat_messages` / `topic_categories`）。设 `MYSQL_ENABLED=false` 可关闭 MySQL，后端自动降级为内存存储（仅不落盘，问答 / 上传主流程不受影响）。
+> - **MySQL**：库本身需先存在（`utf8mb4`），后端启动时自动建表（`documents` / `chat_sessions` / `chat_messages` / `topic_categories` / `retrieval_configs`）。设 `MYSQL_ENABLED=false` 可关闭 MySQL，后端自动降级为内存存储（仅不落盘，问答 / 上传主流程不受影响）。
 > - **默认管理员**：首次启动、用户表为空时自动创建 `DEFAULT_ADMIN_USERNAME` / `DEFAULT_ADMIN_PASSWORD`（默认 `admin` / `admin123`，请在生产环境修改）。
 > - **JWT_SECRET**：生产环境务必改成足够随机的长字符串。
+> - **答案层研判**：`JUDGE_ENABLED=true` 开启防幻觉研判（默认关，关闭时行为与引入前一致）。
+> - **检索增强开关**：`RERANK_ENABLED`（rerank 重排，默认关）、`MULTI_QUERY_ENABLED`（多查询改写，默认关）——均评测驱动、失败降级、不扩检索范围。
+> - **⚠️ 内网代理**：若在公司代理环境，启动后端前需设 `NO_PROXY`（或直接用内置该设置的 `启动后端.bat`），否则对阿里云 / DeepSeek 的请求会被代理拦截导致问答失败。
 
 **4. 启动后端**
 ```powershell
@@ -183,7 +206,7 @@ npm run dev
 | POST | `/documents/upload` | 上传文档（异步入库，秒级返回，前端轮询状态） |
 | POST | `/documents/ingest` | 将已存在的文件入库 |
 | DELETE | `/documents/{filename}?kb_id=` | 删除文档及其向量片段 |
-| POST | `/rag/ask` | 知识库内问答，返回 answer + sources |
+| POST | `/rag/ask` | 知识库内问答，返回 answer + sources（+ 研判 verdict）；`kb_id` 可选，缺省按范围偏好检索 |
 | POST | `/maintenance/reconcile?kb_id=` | 数据对账，清理僵尸片段 |
 | POST | `/maintenance/reload?kb_id=` | 重载向量库，加载最新数据 |
 
@@ -207,6 +230,14 @@ npm run dev
 | PATCH | `/topics/{id}` `{name}` | 重命名分类，并联动更新本库下用旧分类名的文档 |
 | DELETE | `/topics/{id}` | 删除分类（属主或管理员） |
 
+**检索配置（三级在线可调）**
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/config/retrieval?scope=&kb_id=` | 读取某层级配置（system 层仅管理员，kb 层走知识库访问隔离） |
+| PUT | `/config/retrieval` | 写入 / 更新某层级配置（top_k、距离阈值、研判开关、作答提示词等），存 MySQL 即时生效 |
+| DELETE | `/config/retrieval?scope=&kb_id=` | 删除某层级配置，回落上一级（kb→tenant→system→硬默认） |
+
 ### 问答接口示例
 
 请求 `POST /rag/ask`：
@@ -220,9 +251,14 @@ npm run dev
   "answer": "……",
   "sources": [
     { "filename": "xxx.txt", "chunk_index": 2, "content": "……" }
-  ]
+  ],
+  "answerable": true,
+  "reason": "资料中包含读取文档的相关说明。",
+  "confidence": "high"
 }
 ```
+
+> `answerable` / `reason` / `confidence` 为答案层「研判」结果：判定资料是否真能回答该问题，`answerable=false` 表示拒答（前端展示拒答 / 低可信徽标）。研判关闭时上层给出默认放行值（`answerable=true`、`confidence=high`）。
 
 ---
 
@@ -235,10 +271,25 @@ npm run dev
 - 目的：既不产生无意义碎片，也不让大块文本稀释语义，保证检索精度。
 
 **检索**（`knowledge_base_service.search` + `rag_service`）
-- 按 `kb_id` 限定检索范围（多知识库隔离）
-- 多召回候选 → 过滤过短碎片 → 取 top_k（不足则补齐保底）
+- 按 `kb_id` 限定检索范围（多知识库隔离）；召回经 LangChain `langchain_chroma`，距离语义与原生 Chroma 一致
+- （可选）**多查询改写**：把原问题改写成 N 条语义等价查询多路召回，按 `(filename, chunk_index)` 去重保留最小距离——所有查询共用同一 `where=kb_id` 过滤，只扩召回入口、不扩范围
+- 多召回候选 → 过滤过短碎片 →（可选）**rerank 重排候选顺序**（保留每条原距离）→ 取 top_k（不足则补齐保底）
 - 距离超过 `RAG_MAX_DISTANCE` 的片段视为不相关而丢弃
-- 命中片段拼成资料，交由 DeepSeek 依据资料作答
+- 命中片段拼成资料，交由 DeepSeek 依据资料作答；（可选）作答前先经**答案层「研判」**判断资料是否真能回答，不能答则拒答
+
+> `top_k`、距离阈值、研判开关、作答提示词等参数支持**三级在线配置**（系统 / 租户 / 知识库），存 MySQL，改后即时生效；多查询改写、rerank 由 `MULTI_QUERY_ENABLED` / `RERANK_ENABLED` 开关控制，默认关。
+
+---
+
+## 答案层「研判」防幻觉
+
+企业知识库最痛的不是「召回不到」，而是「主题相关但库里没答案时，模型硬编一个」。本项目的解法放在**答案层**而非检索层——评测证明相似度距离阈值无法区分「能答 / 不能答」（两者区间重叠），只能靠 LLM 做语义研判：
+
+- 作答前一次 LLM 调用同时完成「研判 + 作答」，返回 `{answerable, reason, answer, confidence}`
+- `answerable=false` → 明确拒答，前端展示拒答 / 低可信徽标，并随会话持久化（`chat_messages` 存 verdict）
+- 研判失败自动降级为放行（`answerable=true` + `confidence=low`），绝不因研判异常中断问答
+- `JUDGE_ENABLED` 一键开关，关闭时行为与引入前完全一致，可平滑降级
+- **评测实证**（`eval/qa_set.json`，62 题含 21 hard-negative）：幻觉风险 **91.7%→8.3%**，正例召回保持 **94.7% 零误伤**
 
 ---
 
@@ -253,7 +304,9 @@ npm run dev
 ```powershell
 python -m unittest discover -s tests
 ```
-当前 **159 个测试**，覆盖各 service、API 端点、认证、多知识库隔离、会话归属隔离、主题分类按库隔离与联动等。普通测试使用 fake provider 与内存仓库，不会调用真实阿里云 / DeepSeek API，也不依赖真实 MySQL。
+当前 **200 个测试**，覆盖各 service、API 端点、认证、多知识库隔离、会话归属隔离、主题分类按库隔离与联动、答案层研判、三级检索配置解析、rerank / 多查询改写（含开启增强项下的隔离红线回归）等。普通测试使用 fake provider 与内存仓库，不会调用真实阿里云 / DeepSeek API，也不依赖真实 MySQL。
+
+> **检索 / 研判质量评测**（区别于单元测试，会真调 API）：`python -m scripts.eval_retrieval`（检索层，Hit@k / MRR）与 `python -m scripts.eval_answer`（研判层，幻觉风险 / 拒答率），基于 `eval/qa_set.json`。任何检索 / 研判改动都先跑 before/after，数字说话再决定去留。
 
 ---
 
@@ -266,10 +319,16 @@ python -m unittest discover -s tests
 可能是直接在文件夹删了文件、没走前端删除按钮，导致向量残留。点「数据对账」清理即可。
 
 **Q：上传大文件（如大 PDF）很慢？**
-上传接口存盘即返回，解析 / 向量化在后台异步进行，前端轮询状态。Embedding 采用分批批量调用（默认每批 10 条）提速。超大文档仍需一定时间，属正常现象。
+上传接口存盘即返回，解析 / 向量化在后台异步进行，前端轮询状态。Embedding 采用分批批量调用（默认每批 10 条）并用线程池并发发送各批次（并发度 `EMBEDDING_CONCURRENCY`，默认 5）提速。超大文档仍需一定时间，属正常现象。
 
 **Q：没有 MySQL 能跑吗？**
-能。设 `MYSQL_ENABLED=false` 或数据库不可用时，元数据 / 会话 / 主题自动走内存实现，功能可用但重启后不保留。
+能。设 `MYSQL_ENABLED=false` 或数据库不可用时，元数据 / 会话 / 主题 / 检索配置自动走内存实现，功能可用但重启后不保留。
+
+**Q：为什么模型有时直接说「资料里没有」而不硬答？**
+这是**答案层研判**在起作用（`JUDGE_ENABLED=true`）：作答前先判断资料是否真能回答，不能答则明确拒答，避免主题相关却无答案时编造。属预期行为，可在检索配置页或 `.env` 关闭 `JUDGE_ENABLED` 降级为总是作答。
+
+**Q：rerank / 多查询改写要不要开？**
+两者都**默认关**、评测驱动：rerank 对本库整体伤召回（Hit@5 94.7%→89.5%），暂不建议开；多查询改写评测正向（MRR 0.776→0.807、零误伤）但多一次 LLM 调用较慢，适合「质量优先胜过延迟」的场景手动开。改这类参数后请用 `scripts/eval_*.py` 跑 before/after 再决定。
 
 ---
 
