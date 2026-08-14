@@ -69,6 +69,22 @@ DOCUMENTS_DIR = _env.get("DOCUMENTS_DIR", str(BASE_DIR / "data" / "documents"))
 # 值越小越严格（只留高度相关的），越大越宽松。0.5 是一个较稳妥的起点，可按效果调。
 RAG_MAX_DISTANCE = float(_env.get("RAG_MAX_DISTANCE", "0.5"))
 
+# ===== 检索重排（rerank）·检索质量专线阶段3 =====
+# 背景：正例召回已近满分，但「能答/不能答」在向量距离上区间重叠、个别 hard case 漏召回。
+# rerank 用交叉编码器对「query-候选片段」逐对精排，比双塔向量粗排更能拉开相关/不相关分差，
+# 把真正相关的片段顶到前面。实现走阿里云 gte-rerank-v2（纯 HTTP，复用 ALIYUN_API_KEY）。
+# RERANK_ENABLED：是否启用重排。默认关闭(false)保守上线——关闭时检索行为与引入前完全一致，
+#   出任何问题可一键切回。评测(eval_retrieval before/after)验证有效后再在生产 .env 打开。
+# RERANK_PROVIDER：aliyun（真实）/ fake（确定性启发式，供单测零网络）。
+# rerank 只重排候选、不改每条的向量 distance，故 RAG_MAX_DISTANCE 阈值语义不受影响。
+RERANK_ENABLED = _env.get("RERANK_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+RERANK_PROVIDER = _env.get("RERANK_PROVIDER", "aliyun")
+ALIYUN_RERANK_MODEL = _env.get("ALIYUN_RERANK_MODEL", "gte-rerank-v2")
+ALIYUN_RERANK_URL = _env.get(
+    "ALIYUN_RERANK_URL",
+    "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
+)
+
 # ===== MySQL（文档元数据持久化）=====
 # 存放文档的分类/描述/上传时间/状态等元数据，替换早期前端 localStorage 占位。
 # MYSQL_ENABLED：是否启用 MySQL。为空或数据库不可用时，后端自动降级为“内存元数据”，

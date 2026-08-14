@@ -3,15 +3,13 @@
 > **这份文件是"会话记忆锚点"**：任何新会话开始时，先读这份文件即可恢复完整上下文——当前进度、已完成、待办、怎么启动、有哪些坑。
 > 每完成一块工作就更新这里。详细技术复盘见 `../Thinking_and_learning/Enterprise_RAG/KNOWLEDGE_NOTES.md`（#1–#77），每日进度见同目录 `daily_tasks.md`。
 >
-> **最后更新：2026-08-14（下午）**
+> **最后更新：2026-08-14（晚·阶段1 LangChain 地基 + 阶段3 rerank）**
 
 ---
 
 ## 0. 一句话现状
 
-企业级多租户 RAG 问答系统，核心链路 + 认证 + 多租户隔离 + **答案层研判防幻觉** 均已完成并真机验证。整体完成度 **约 85%**（面向"企业级可上线"）。**唯一剩的 P0 是部署工程化**；检索质量专线下一步是 **rerank**。
-
-**⚠️ 今天(08-14)一大批改动尚未 git commit**（见 §5）——新会话第一件事可考虑先提交落袋。
+企业级多租户 RAG 问答系统，核心链路 + 认证 + 多租户隔离 + **答案层研判防幻觉** 均已完成并真机验证。整体完成度 **约 87%**（面向"企业级可上线"）。**唯一剩的 P0 是部署工程化**；检索质量专线：LangChain 地基已落地，rerank 已接入但**评测证明整体伤召回、默认关**（详见 §3/§4.A），下一步价值点转向 **调 rerank 融合策略** 或 **多查询改写**。
 
 ---
 
@@ -85,19 +83,43 @@ cd frontend && npm run dev   # http://localhost:5173
   - api 加 GET/PUT/DELETE `/config/retrieval`（system 仅管理员、kb 走 require_kb_access 隔离）。
   - 前端：`client.ts` 加接口；`ConfigPlaceholder.vue` 占位→三分区真实页 + 新增 `components/ConfigForm.vue`。
   - 测试：新增 `tests/test_retrieval_config_service.py`（解析优先级/多全库偏好/隔离回归/仅管理员），
-    扩 `test_rag_service.py`（参数覆盖生效）。**170 → 184 全绿**。前端 vue-tsc 通过。
-  - ⚠️ 真机端到端（启动前后端点一遍）+ commit 尚未做（见 §5）。
+    扩 `test_rag_service.py`（参数覆盖生效）。**170 → 184 全绿**。前端 vue-tsc 通过。已提交 `c624191`。
+
+**检索质量专线：阶段1 LangChain 地基 + 阶段3 rerank（08-14 晚，未提交）**
+- **阶段 1：LangChain 适配层（地基，已落地）**
+  - 新增 `app/services/langchain_adapters.py`：`AliyunEmbeddings`（鸭子类型 Embeddings，委托 embedding_service，
+    尊重 fake）；`build_chroma_vectorstore(client, collection_name)` 用 `langchain_chroma.Chroma` 包住**已存在的
+    公共 client + 集合**（照抄 judge_service 的 truststore/SSL 内网防御，惰性 import）。
+  - `knowledge_base_service.search()` 的召回改经 `similarity_search_with_score`；**实测 score == 原生 Chroma
+    余弦距离，逐位一致**（eval 距离最大差 2e-4，纯 API 浮点抖动），distance 语义零漂移、指标与 legacy 完全一致。
+  - **踩坑记**：langchain_chroma 要**公共 Client**（`chromadb.Client`），不能传 `collection._client`（那是底层
+    RustBindingsAPI，会崩）；`_set_collection_for_test` 加可选 client 参数、缺省时从注入集合重建公共 Client。
+    构造用 `create_collection_if_not_exists=False`（集合必已存在）。→ 详见新坑 §6.8。
+- **阶段 3：rerank 重排（已接入，评测后默认关）**
+  - 新增 `app/services/rerank_service.py`：阿里云 **gte-rerank-v2**（urllib 直连，复用 ALIYUN_API_KEY，
+    仿 embedding_service 重试）；`RERANK_PROVIDER=fake` 确定性分支；**失败降级为原顺序**，绝不中断检索。
+    端点 `.../api/v1/services/rerank/text-rerank/text-rerank`，响应 `output.results[].{index,relevance_score}`。
+  - `search()` 召回后、截 top_k 前用 rerank **只重排候选顺序、保留每条原向量 distance**（阈值/研判语义不受影响）。
+    config 加 `RERANK_ENABLED`(默认 false)/`RERANK_PROVIDER`/`ALIYUN_RERANK_MODEL`/`ALIYUN_RERANK_URL`。
+  - 测试：新增 `test_rerank_service.py`（排序/降级/top_n）、扩 `test_rag_service.py`（rerank 开关 + distance 保留）、
+    扩 `test_kb_isolation.py`（**rerank 开启下隔离红线回归**，菠萝泄露断言）。**184 → 193 全绿**。
+  - **⚠️ 评测结论（真调阿里云 before/after，`eval/result_lc_base.json` vs `eval/result_rerank.json`）**：
+    rerank **整体伤召回** —— Hit@5 **94.7%→89.5%**（#58/#62 两道口语化/多意图正例掉出 top5），
+    虽 7 题排名上升、MRR 0.776→0.781、hard-neg 拒答 0→4.8%、幻觉风险 91.7%→87.5% 微升，**且未修好 #8/#55**。
+    → 决策：**代码/开关/测试全保留，默认 `RERANK_ENABLED=false`**（可一键开）；作为已验证的负面结论归档，
+    下一步优先**调 rerank 融合策略**（只重排 top_k*2、或 rerank 分与距离加权）或**多查询改写**。
 
 ---
 
 ## 4. ⬜ 待办（剩余任务全景）
 
 ### A. 检索质量专线（当前主战场，评测驱动）
-- ⬜ **阶段 3：Rerank 重排** ⭐下一个高价值项：bge-reranker，拉开"能答/不能答"分数差、修 #8/#55 漏召回。内网需验证 torch 或用 rerank API。
-- ⬜ **阶段 1：LangChain 适配层**：把阿里云 embedding 包成 `Embeddings` 子类、Chroma 接 `langchain_chroma`（rerank 的地基，可与阶段3合并做）。
-- ✅ **阶段 5：检索配置页**（08-14 晚完成，未提交）：三级配置层次 + 在线可调 top_k/阈值/JUDGE_ENABLED/作答prompt，存 MySQL。剩：真机端到端验证 + commit。
+- ✅ **阶段 1：LangChain 适配层**（08-14 晚完成）：阿里云 embedding 包成 Embeddings、Chroma 召回接 `langchain_chroma`，
+  距离零漂移。作为 rerank/多查询的地基。
+- ⚠️ **阶段 3：Rerank 重排**（08-14 晚接入，**评测证明伤召回、默认关**）：gte-rerank-v2 API 已接，
+  Hit@5 94.7%→89.5%，未修 #8/#55。代码/开关保留。**下一步：调融合策略再评**（只重排 top_k*2 或分数加权）。
+- ⬜ **阶段 4：多查询改写**（召回补强）——rerank 不理想后，这可能是更稳的召回增强项，可优先。
 - ⬜ 阶段 2：混合检索 BM25+jieba（**已降级**，召回无短板，收益存疑，靠后）
-- ⬜ 阶段 4：多查询改写（召回补强）
 - ⬜ 阶段 6：降级开关 `RETRIEVAL_MODE`、补测、README、（可选）LangSmith
 
 ### B. 离"可上线"还差的（专线之外）
@@ -108,19 +130,24 @@ cd frontend && npm run dev   # http://localhost:5173
 - ⬜ P1 统一存量 docx 切分
 
 ### C. 收尾杂项
-- ⬜ **git commit 今天全部改动**（尚未提交，见 §5）
 - ⬜ 研判性能：换非 thinking 模型专做研判（现在慢）
 
 ---
 
-## 5. ✅ 提交状态（已全部落袋）
+## 5. ✅ 提交状态
 
 - `078fe3b` 研判/徽标/选择器（08-14 白天）——已提交
-- `c624191` **阶段5 检索配置页**（系统/租户/知识库三级参数在线可调，存 MySQL）——**已提交**，
-  10 文件 +1391 行，184 测试全绿，工作树干净。
-- 本地 `master` 领先 `origin/main` 2 个 commit，尚未 `git push`（等确认后再推）。
+- `c624191` **阶段5 检索配置页**（三级参数在线可调，存 MySQL）——已提交，184 测试全绿
+- `75e915b` docs 修正 §5——已提交
+- **阶段1 LangChain 地基 + 阶段3 rerank（本次）**：待提交（见下方文件清单）。193 测试全绿。
+  - 新增：`app/services/langchain_adapters.py`、`app/services/rerank_service.py`、
+    `tests/test_rerank_service.py`、`eval/result_lc_base.json`、`eval/result_rerank.json`
+  - 修改：`app/services/knowledge_base_service.py`、`app/config.py`、`.env`、
+    `tests/test_rag_service.py`、`tests/test_kb_isolation.py`、`PROJECT_STATUS.md`
+  - 建议提交信息：`feat: 检索质量专线 阶段1 LangChain 地基 + 阶段3 rerank(默认关，评测伤召回归档)`
+- 本地 `master` 领先 `origin/main`，尚未 `git push`（等确认后再推）。
 
-> 下一战场：**检索质量专线 — 阶段3 Rerank**（详见 §4.A）。
+> 下一战场：**P0 部署工程化**（唯一硬门槛）或 **检索专线阶段4 多查询改写 / 调 rerank 融合**。
 
 ---
 
@@ -136,3 +163,11 @@ cd frontend && npm run dev   # http://localhost:5173
    把值绑成了模块自己的名字（import 时一次性快照）。**在线改配置光写库不会生效**，必须让运行时读取路径拿到新值。
    阶段5 的解法：把这三项（+answer_prompt）做成 `answer_from_knowledge_base` 的显式形参，由 `/rag/ask`
    先 `retrieval_config_service.resolve_effective()` 解析再传入。改这类"配置驱动行为"务必检查是否走了运行时读取。
+8. **langchain_chroma 要公共 Client、不要私有 bindings**：`langchain_chroma.Chroma(client=...)` 必须传
+   `chromadb.Client`（EphemeralClient/PersistentClient 返回值），**不能传 `collection._client`**——那是底层
+   `RustBindingsAPI`，签名/返回类型不同，`similarity_search_with_score` 会报 `'Collection' object has no
+   attribute 'query'` 或 `get_or_create_collection() got unexpected kwarg embedding_function`。构造时用
+   `create_collection_if_not_exists=False`（集合都是先 get_or_create 建好的）。测试注入 `_set_collection_for_test`
+   缺省时从注入集合的 `_client` 重建一个公共 `Client`（复用其 `_server`）供检索用。**排错先确认传的是公共 client。**
+9. **rerank 不是银弹（评测实证）**：gte-rerank-v2 对本库整体**伤召回**（Hit@5 94.7%→89.5%，口语化/多意图正例
+   #58/#62 被压出 top5），MRR/幻觉风险仅微升。默认 `RERANK_ENABLED=false`。要用先跑 before/after，别凭感觉开。

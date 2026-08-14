@@ -45,6 +45,23 @@ def get_collection():
     return _collection
 
 
+def _get_public_client():
+    """拿到当前生效的**公共** chromadb 客户端（ClientAPI）。
+
+    langchain_chroma 需要公共 Client（PersistentClient/EphemeralClient 返回的对象），
+    不能用 collection._client（那是底层 RustBindingsAPI，签名不同会崩）。
+
+    - 生产/正常路径：get_collection() 已初始化 _client（PersistentClient），直接返回。
+    - 测试注入路径：_set_collection_for_test 会连同注入的集合一并把它的公共 client
+      存进 _client，这里取到的就是测试用的 EphemeralClient。
+    """
+    global _client
+    if _client is None:
+        # 确保已初始化（正常路径下 get_collection 会建 PersistentClient）。
+        get_collection()
+    return _client
+
+
 def _make_point_id(kb_id: int, filename: str, chunk_index: int) -> str:
     """给每张卡片起一个唯一编号，格式：kb_id::文件名::片段序号。
 
@@ -125,39 +142,61 @@ def search(
     if total == 0:
         return []
 
-    query_vector = create_query_embedding(question)
-
     # 多召回候选（top_k 的若干倍），给"过滤碎片"留出补位空间。
     candidate_k = min(max(top_k * 4, top_k), total)
 
-    query_kwargs = {
-        "query_embeddings": [query_vector],
-        "n_results": candidate_k,
-    }
     # 范围过滤：kb_ids（多库）优先于 kb_id（单库）；都为 None 则不过滤（全库）。
+    # ★多租户隔离红线★：这个 where 决定普通用户「全部」只能看自己的库，绝不能弱化。
+    where = None
     if kb_ids is not None:
-        query_kwargs["where"] = {"kb_id": {"$in": kb_ids}}
+        where = {"kb_id": {"$in": kb_ids}}
     elif kb_id is not None:
-        query_kwargs["where"] = {"kb_id": kb_id}
+        where = {"kb_id": kb_id}
 
-    result = collection.query(**query_kwargs)
+    # ★检索召回接入 LangChain（阶段1 地基）★
+    # 经 langchain_chroma 的 similarity_search_with_score 召回，为后续检索增强（rerank、
+    # 多查询等）铺地基。similarity_search_with_score 返回的 score 即 Chroma 原始余弦距离
+    # （已实测与原生 collection.query 的 distance 逐位一致，无换算），distance 语义不漂移。
+    # embed_query 由 AliyunEmbeddings 委托 create_query_embedding，与原路径完全等价。
+    from app.services.langchain_adapters import build_chroma_vectorstore
 
-    ids = result["ids"][0]
-    documents_text = result["documents"][0]
-    metadatas = result["metadatas"][0]
-    distances = result["distances"][0]
+    vectorstore = build_chroma_vectorstore(_get_public_client(), collection.name)
+    scored = vectorstore.similarity_search_with_score(
+        question, k=candidate_k, filter=where
+    )
 
     candidates = []
-    for i in range(len(ids)):
-        metadata = metadatas[i] or {}
+    for doc, distance in scored:
+        metadata = doc.metadata or {}
         candidates.append(
             {
-                "content": documents_text[i],
+                "content": doc.page_content,
                 "filename": metadata.get("filename", ""),
                 "chunk_index": metadata.get("chunk_index", -1),
-                "distance": distances[i],
+                "distance": distance,
             }
         )
+
+    # ★检索重排（rerank，阶段3）★
+    # 双塔向量召回是「粗排」（按余弦距离），交叉编码器 rerank 是「精排」——对 query 与每条
+    # 候选逐对打分，更能拉开相关/不相关的分差、修 hard case 漏召回。这里仅用 rerank 分数
+    # 「重新排序 candidates」，每条的向量 distance 字段原样保留（阈值过滤仍用它，
+    # RAG_MAX_DISTANCE 与答案层研判语义均不受影响）。RERANK_ENABLED=false 时保持距离原序，
+    # 行为与阶段1 完全一致。rerank 内部失败会自动降级为原顺序，绝不中断检索。
+    from app.config import RERANK_ENABLED
+
+    if RERANK_ENABLED and candidates:
+        from app.services import rerank_service
+
+        order = rerank_service.rerank(
+            question, [c["content"] for c in candidates], top_n=len(candidates)
+        )
+        ranked_idx = [o["index"] for o in order]
+        # 按 rerank 次序重排；防御性地把未在返回中的候选（异常降级/越界时）追加到末尾，保证不丢。
+        seen = set(ranked_idx)
+        reordered = [candidates[i] for i in ranked_idx]
+        reordered.extend(candidates[i] for i in range(len(candidates)) if i not in seen)
+        candidates = reordered
 
     # 过短片段（标题、目录行等，如"业务用户创建""3.3 xxx 14"）几乎没有回答价值，先剔除。
     MIN_CONTENT_LEN = 15
@@ -309,13 +348,31 @@ def stats(kb_id: int | None = None) -> dict:
     }
 
 
-def _set_collection_for_test(collection) -> None:
+def _set_collection_for_test(collection, client=None) -> None:
     """仅供测试使用：注入一个临时的（内存）集合，替换真实档案柜。
 
     这样测试就不会碰到硬盘上的真实知识库，也不用调用真实付费接口。
+
+    client：可选，注入集合对应的**公共** chromadb 客户端（EphemeralClient 返回值）。
+    检索召回经 langchain_chroma 需要公共 client；测试若未显式传入，则从 collection 的
+    底层 server 重建一个等价公共 Client（仅测试环境使用，指向同一份内存数据）。
     """
-    global _collection
+    global _collection, _client
     _collection = collection
+    if client is not None:
+        _client = client
+    else:
+        # 未显式传 client：从注入集合重建一个公共 Client（指向同一底层内存数据）。
+        # collection._client 是私有 RustBindingsAPI，langchain 不能直接用；这里把它包成
+        # 公共 Client（复用其 _server），仅供测试的检索召回路径。
+        try:
+            from chromadb.api.client import Client
+
+            reconstructed = Client.__new__(Client)
+            reconstructed._server = collection._client
+            _client = reconstructed
+        except Exception:  # noqa: BLE001 —— 重建失败不阻断（个别老测试可能不走 search）
+            _client = None
 
 
 def _reset_collection_for_test() -> None:

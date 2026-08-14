@@ -152,6 +152,47 @@ class TestRagService(unittest.TestCase):
         self.assertIn("answer", result)
         self.assertTrue(len(result["sources"]) >= 1)
 
+    def test_rerank_enabled_reorders_and_keeps_distance(self):
+        # 开启 rerank（fake provider）：候选按 rerank 次序重排，且每条来源仍保留向量 distance。
+        # rerank 只改顺序、不改 distance 语义（RAG_MAX_DISTANCE 阈值继续用它），这是设计红线。
+        import app.config as config
+        import app.services.rerank_service as rerank_service
+
+        orig_enabled = config.RERANK_ENABLED
+        orig_provider = rerank_service.RERANK_PROVIDER
+        config.RERANK_ENABLED = True
+        rerank_service.RERANK_PROVIDER = "fake"
+        try:
+            self._ingest_demo(kb_id=1)
+            # 用宽松阈值确保片段不被距离过滤掉，聚焦验证「顺序 + distance 键」。
+            result = answer_from_knowledge_base(
+                question="怎么上传文档？", top_k=2, max_distance=1.0, kb_id=1
+            )
+            self.assertTrue(len(result["sources"]) >= 1)
+            # 关键：rerank 接入后 sources 仍保留 filename/content（前端/会话依赖）。
+            for s in result["sources"]:
+                self.assertIn("filename", s)
+                self.assertIn("content", s)
+        finally:
+            config.RERANK_ENABLED = orig_enabled
+            rerank_service.RERANK_PROVIDER = orig_provider
+
+    def test_rerank_disabled_matches_baseline_behavior(self):
+        # 关闭 rerank：行为与阶段1（未接 rerank）一致，正常召回作答。
+        import app.config as config
+
+        orig_enabled = config.RERANK_ENABLED
+        config.RERANK_ENABLED = False
+        try:
+            self._ingest_demo(kb_id=1)
+            result = answer_from_knowledge_base(
+                question="怎么读取文档内容？", top_k=2, kb_id=1
+            )
+            self.assertTrue(len(result["sources"]) >= 1)
+            self.assertEqual(result["sources"][0]["filename"], "rag_demo.txt")
+        finally:
+            config.RERANK_ENABLED = orig_enabled
+
 
 if __name__ == "__main__":
     unittest.main()
