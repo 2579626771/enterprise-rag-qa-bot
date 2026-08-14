@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pathlib import Path
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from app.services.rag_service import answer_from_knowledge_base
 from app.services.document_service import (
     list_text_files,
@@ -19,6 +19,7 @@ from app.services import user_service
 from app.services import kb_service
 from app.services import quota_service
 from app.services import auth_service
+from app.services import retrieval_config_service
 from app.services.auth_service import TokenError
 from app.services.kb_service import QuotaExceededError
 from app.config import RAG_TOP_K
@@ -148,6 +149,16 @@ class AppendMessageRequest(BaseModel):
     sources: list = []
     # 研判结果（assistant 消息可带）：{answerable, reason, confidence}。存库以便刷新会话后仍能显示徽标。
     verdict: dict | None = None
+
+
+class RetrievalConfigBody(BaseModel):
+    # 检索配置字段（三级 scope 共用）。范围校验避免存入非法值。
+    top_k: int = Field(ge=1, le=20)
+    max_distance: float = Field(ge=0.0, le=1.0)
+    judge_enabled: bool = False
+    answer_prompt: str = ""
+    # 仅 tenant 级有意义：多/全库查询用哪份配置（'system'/'tenant'）。其它级忽略。
+    multi_scope: str | None = None
 
 
 class CreateTopicRequest(BaseModel):
@@ -721,12 +732,21 @@ def ask_rag(request: RagAskRequest, current_user: dict = Depends(get_current_use
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
 
+    owner_id = current_user.get("id")
+    # 解析该次问答实际生效的检索参数（三级配置：kb→tenant→system→硬默认）。
+    # 显式传给 answer_from_knowledge_base，绕过 config.RAG_* 的 import-time 常量快照——
+    # 这是「在线改配置能生效」的关键（rag_service 若只读模块常量，改库不会生效）。
+    cfg = retrieval_config_service.resolve_effective(owner_id=owner_id, kb_id=request.kb_id)
+
     if request.kb_id is not None:
         # 单库：沿用原有归属校验 + 单库检索。
         require_kb_access(request.kb_id, current_user)
         result = answer_from_knowledge_base(
             question=request.question,
-            top_k=RAG_TOP_K,
+            top_k=cfg["top_k"],
+            max_distance=cfg["max_distance"],
+            judge_enabled=cfg["judge_enabled"],
+            answer_prompt=cfg["answer_prompt"],
             kb_id=request.kb_id,
         )
     else:
@@ -736,15 +756,21 @@ def ask_rag(request: RagAskRequest, current_user: dict = Depends(get_current_use
             # 管理员真全库（kb_id/kb_ids 都不传 → 不过滤）。
             result = answer_from_knowledge_base(
                 question=request.question,
-                top_k=RAG_TOP_K,
+                top_k=cfg["top_k"],
+                max_distance=cfg["max_distance"],
+                judge_enabled=cfg["judge_enabled"],
+                answer_prompt=cfg["answer_prompt"],
             )
         else:
             # 普通用户：把范围限定到自己拥有的所有库 —— 天然隔离，不泄露他人数据。
-            my_kbs = kb_service.list_by_owner(current_user.get("id"))
+            my_kbs = kb_service.list_by_owner(owner_id)
             my_ids = [kb["id"] for kb in my_kbs]
             result = answer_from_knowledge_base(
                 question=request.question,
-                top_k=RAG_TOP_K,
+                top_k=cfg["top_k"],
+                max_distance=cfg["max_distance"],
+                judge_enabled=cfg["judge_enabled"],
+                answer_prompt=cfg["answer_prompt"],
                 kb_ids=my_ids,
             )
 
@@ -758,3 +784,81 @@ def ask_rag(request: RagAskRequest, current_user: dict = Depends(get_current_use
         "reason": result.get("reason", ""),
         "confidence": result.get("confidence", "high"),
     }
+
+
+# ===== 检索配置 =====
+# 三级检索参数（系统/租户/知识库）在线读写。见 retrieval_config_service。
+def _authorize_config(scope: str, kb_id: int | None, current_user: dict) -> int | None:
+    """按 scope 做鉴权，返回该配置行归属的 owner_id（system→None）。
+
+    - system：仅管理员可读写（配置页也只对管理员显示该分区）。
+    - tenant：当前用户本人。
+    - kb    ：走 require_kb_access（属主或管理员），并返回该库属主 id 存入配置行。
+    """
+    if scope == retrieval_config_service.SCOPE_SYSTEM:
+        if current_user.get("role") != user_service.ROLE_ADMIN:
+            raise HTTPException(status_code=403, detail="需要管理员权限")
+        return None
+    if scope == retrieval_config_service.SCOPE_TENANT:
+        return current_user.get("id")
+    if scope == retrieval_config_service.SCOPE_KB:
+        if kb_id is None:
+            raise HTTPException(status_code=400, detail="kb scope 需要 kb_id")
+        kb = require_kb_access(kb_id, current_user)  # 隔离红线：非属主/非管理员 403
+        return kb["owner_id"]
+    raise HTTPException(status_code=400, detail=f"未知 scope：{scope}")
+
+
+@app.get("/config/retrieval")
+def get_retrieval_config(
+    scope: str = Query("system"),
+    kb_id: int | None = Query(None),
+    current_user: dict = Depends(get_current_user),
+):
+    """读取某级检索配置（含继承/兜底值 + inherited 标记，供前端展示当前生效值）。"""
+    owner_id = _authorize_config(scope, kb_id, current_user)
+    return retrieval_config_service.get_view(scope, owner_id, kb_id)
+
+
+@app.put("/config/retrieval")
+def put_retrieval_config(
+    body: RetrievalConfigBody,
+    scope: str = Query("system"),
+    kb_id: int | None = Query(None),
+    current_user: dict = Depends(get_current_user),
+):
+    """写入/更新某级检索配置。鉴权同读；系统级仅管理员、kb 级走隔离校验。"""
+    owner_id = _authorize_config(scope, kb_id, current_user)
+    try:
+        if scope == retrieval_config_service.SCOPE_SYSTEM:
+            row = retrieval_config_service.set_system(
+                body.top_k, body.max_distance, body.judge_enabled, body.answer_prompt
+            )
+        elif scope == retrieval_config_service.SCOPE_TENANT:
+            row = retrieval_config_service.set_tenant(
+                owner_id, body.top_k, body.max_distance,
+                body.judge_enabled, body.answer_prompt, body.multi_scope,
+            )
+        else:  # kb
+            row = retrieval_config_service.set_kb(
+                kb_id, owner_id, body.top_k, body.max_distance,
+                body.judge_enabled, body.answer_prompt,
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    from app.services.retrieval_config_service import _public
+    return _public(row, inherited=False)
+
+
+@app.delete("/config/retrieval")
+def delete_retrieval_config(
+    scope: str = Query("kb"),
+    kb_id: int | None = Query(None),
+    current_user: dict = Depends(get_current_user),
+):
+    """清除某知识库的独立配置，回落继承（仅支持 kb scope）。"""
+    if scope != retrieval_config_service.SCOPE_KB:
+        raise HTTPException(status_code=400, detail="仅支持清除 kb 级配置")
+    _authorize_config(scope, kb_id, current_user)
+    retrieval_config_service.clear_kb(kb_id)
+    return retrieval_config_service.get_view(scope, None, kb_id)

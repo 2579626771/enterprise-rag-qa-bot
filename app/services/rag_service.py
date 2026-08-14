@@ -8,6 +8,9 @@ logger = get_logger(__name__)
 def answer_from_knowledge_base(
     question: str,
     top_k: int | None = None,
+    max_distance: float | None = None,
+    judge_enabled: bool | None = None,
+    answer_prompt: str | None = None,
     kb_id: int | None = None,
     kb_ids: list[int] | None = None,
 ) -> dict:
@@ -18,24 +21,33 @@ def answer_from_knowledge_base(
     - kb_id：只在该单库检索（普通用户单选某库）。
     - 两者都 None：真全库（仅管理员跨库）。
 
+    可调检索参数（均可 None，None 时回退 config 常量默认，行为与引入前完全一致）：
+    - top_k / max_distance / judge_enabled / answer_prompt。
+      ⚠️ 这四项必须由调用方（/rag/ask 从 retrieval_config_service 解析后）显式传入才能「在线生效」，
+      因为 config.RAG_* 是 import-time 常量快照，改库不改运行时读取路径不会生效（见 eval_answer 注释）。
+
     返回：answer(回答) + sources(命中的来源列表) + answerable/reason/confidence(研判结果)。
-    研判(JUDGE_ENABLED)开启时，作答前先判断「资料是否真能回答该问题」，不能答则明确拒答，
+    研判(judge_enabled)开启时，作答前先判断「资料是否真能回答该问题」，不能答则明确拒答，
     治「主题相关但库里没答案」导致的幻觉（详见 judge_service 与 eval/ 评测结论）。
     """
     if top_k is None:
         top_k = RAG_TOP_K
+    if max_distance is None:
+        max_distance = RAG_MAX_DISTANCE
+    if judge_enabled is None:
+        judge_enabled = JUDGE_ENABLED
 
     hits = knowledge_base_service.search(question, top_k=top_k, kb_id=kb_id, kb_ids=kb_ids)
 
     # ★第一道防线：相似度阈值过滤★
     # 检索一定会返回 top_k 条，哪怕都不相关。这里把“距离太远（不够相关）”的丢掉。
     # 距离越小越相关；大于阈值的视为无关。
-    relevant_hits = [hit for hit in hits if hit["distance"] <= RAG_MAX_DISTANCE]
+    relevant_hits = [hit for hit in hits if hit["distance"] <= max_distance]
 
     if hits:
         logger.info(
             f"检索到 {len(hits)} 条，距离={[round(h['distance'], 3) for h in hits]}，"
-            f"阈值={RAG_MAX_DISTANCE}，通过过滤 {len(relevant_hits)} 条"
+            f"阈值={max_distance}，通过过滤 {len(relevant_hits)} 条"
         )
 
     if not relevant_hits:
@@ -68,13 +80,13 @@ def answer_from_knowledge_base(
     # ★第二道防线：研判层（防幻觉）★
     # 距离阈值挡不住「主题相关但库里没答案」的问题（评测证明两者距离几乎完全重叠）。
     # 研判层让 LLM 判断资料是否真能回答；不能答则明确拒答、保留来源供用户自查。
-    if JUDGE_ENABLED:
+    if judge_enabled:
         from app.services.judge_service import judge_and_answer
 
         verdict = judge_and_answer(question=question, context=context)
         # degraded：研判自身失败已降级放行，answer 为空 —— 回退到常规作答，绝不因研判故障拒服务。
         if verdict.get("degraded") or not verdict.get("answer"):
-            answer = generate_answer(question=question, context=context)
+            answer = generate_answer(question=question, context=context, answer_prompt=answer_prompt)
         else:
             answer = verdict["answer"]
 
@@ -90,7 +102,7 @@ def answer_from_knowledge_base(
         }
 
     # 研判关闭：走原有流程（行为与引入前完全一致）。
-    answer = generate_answer(question=question, context=context)
+    answer = generate_answer(question=question, context=context, answer_prompt=answer_prompt)
     logger.info(f"生成的回答: {answer}")
     return {
         "answer": answer,

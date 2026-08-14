@@ -116,6 +116,42 @@ class TestRagService(unittest.TestCase):
         # fake 研判可回答时，答案回显问题。
         self.assertIn("怎么读取文档内容？", result["answer"])
 
+    def test_explicit_max_distance_param_filters(self):
+        # 显式传入极严阈值(0.0)：几乎所有片段都被过滤 → 视为无相关内容拒答。
+        # 证明 max_distance 作为入参能覆盖 config 常量（在线改配置生效的关键）。
+        self._ingest_demo(kb_id=1)
+        strict = answer_from_knowledge_base(
+            question="怎么读取文档内容？", top_k=2, max_distance=0.0, kb_id=1
+        )
+        self.assertEqual(strict["sources"], [])
+        self.assertFalse(strict["answerable"])
+        # 对照：宽松阈值(1.0)能召回。
+        loose = answer_from_knowledge_base(
+            question="怎么读取文档内容？", top_k=2, max_distance=1.0, kb_id=1
+        )
+        self.assertTrue(len(loose["sources"]) >= 1)
+
+    def test_explicit_judge_enabled_param_overrides_module_flag(self):
+        # 模块级 JUDGE_ENABLED=False，但显式传 judge_enabled=True 应走研判路径。
+        rag_service.JUDGE_ENABLED = False
+        self._ingest_demo(kb_id=1)
+        result = answer_from_knowledge_base(
+            question="怎么读取文档内容？", top_k=2, judge_enabled=True, kb_id=1
+        )
+        # fake 研判有资料 → 可回答，结构完整。
+        self.assertTrue(result["answerable"])
+        self.assertTrue(len(result["sources"]) >= 1)
+
+    def test_custom_answer_prompt_is_threaded(self):
+        # 自定义作答提示词应透传到 answer_service（fake 分支忽略提示词但不应报错）。
+        self._ingest_demo(kb_id=1)
+        result = answer_from_knowledge_base(
+            question="怎么读取文档内容？", top_k=2, kb_id=1,
+            answer_prompt="只用一句话回答。",
+        )
+        self.assertIn("answer", result)
+        self.assertTrue(len(result["sources"]) >= 1)
+
 
 if __name__ == "__main__":
     unittest.main()

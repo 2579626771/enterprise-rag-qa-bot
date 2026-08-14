@@ -319,6 +319,58 @@ export async function setUserQuota(
   return data
 }
 
+// ---- 检索配置（三级：系统/租户/知识库）----
+
+export type ConfigScope = 'system' | 'tenant' | 'kb'
+
+export interface RetrievalConfig {
+  top_k: number
+  max_distance: number
+  judge_enabled: boolean
+  answer_prompt: string
+  // 仅 tenant 级返回：多/全库查询用哪份配置（'system'|'tenant'）。
+  multi_scope?: 'system' | 'tenant'
+  // true 表示该级无自有配置、展示的是继承/兜底值。
+  inherited?: boolean
+}
+
+/** 读取某级检索配置（含继承值 + inherited 标记）。 */
+export async function getRetrievalConfig(
+  scope: ConfigScope,
+  kbId?: number,
+): Promise<RetrievalConfig> {
+  const params: Record<string, unknown> = { scope }
+  if (scope === 'kb' && kbId != null) params.kb_id = kbId
+  const { data } = await http.get<RetrievalConfig>('/config/retrieval', { params })
+  return data
+}
+
+/** 写入/更新某级检索配置。 */
+export async function saveRetrievalConfig(
+  scope: ConfigScope,
+  payload: {
+    top_k: number
+    max_distance: number
+    judge_enabled: boolean
+    answer_prompt: string
+    multi_scope?: 'system' | 'tenant'
+  },
+  kbId?: number,
+): Promise<RetrievalConfig> {
+  const params: Record<string, unknown> = { scope }
+  if (scope === 'kb' && kbId != null) params.kb_id = kbId
+  const { data } = await http.put<RetrievalConfig>('/config/retrieval', payload, { params })
+  return data
+}
+
+/** 清除某知识库的独立配置，回落继承。 */
+export async function resetKbRetrievalConfig(kbId: number): Promise<RetrievalConfig> {
+  const { data } = await http.delete<RetrievalConfig>('/config/retrieval', {
+    params: { scope: 'kb', kb_id: kbId },
+  })
+  return data
+}
+
 // ---- 知识库 ----
 
 export interface KnowledgeBase {

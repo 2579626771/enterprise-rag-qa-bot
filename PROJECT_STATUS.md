@@ -74,6 +74,20 @@ cd frontend && npm run dev   # http://localhost:5173
 
 测试 159 → **170 全绿**。
 
+**检索配置页（08-14 晚，未提交）**
+- **阶段 5：检索配置页三级配置层次**（系统默认 / 租户默认 / 按知识库），top_k/阈值/研判开关/作答提示词
+  在线可调、存 MySQL，无需改 .env 重启。多/全库查询用哪份配置由租户 `multi_scope` 偏好决定（配置页设，聊天页不选）。
+  - 新增 `app/services/retrieval_config_service.py`（照 kb_service 双仓库骨架，表 `retrieval_configs`，
+    `resolve_effective` 三级解析 kb→tenant→system→硬默认）。
+  - **破解 import-time 常量快照坑**：`answer_from_knowledge_base` 新增 `max_distance/judge_enabled/answer_prompt`
+    形参，`/rag/ask` 先 `resolve_effective` 再显式传入——否则改库不生效（详见坑#7）。
+  - `answer_service` 抽 `DEFAULT_ANSWER_PROMPT` 常量、支持 `answer_prompt` 覆盖。
+  - api 加 GET/PUT/DELETE `/config/retrieval`（system 仅管理员、kb 走 require_kb_access 隔离）。
+  - 前端：`client.ts` 加接口；`ConfigPlaceholder.vue` 占位→三分区真实页 + 新增 `components/ConfigForm.vue`。
+  - 测试：新增 `tests/test_retrieval_config_service.py`（解析优先级/多全库偏好/隔离回归/仅管理员），
+    扩 `test_rag_service.py`（参数覆盖生效）。**170 → 184 全绿**。前端 vue-tsc 通过。
+  - ⚠️ 真机端到端（启动前后端点一遍）+ commit 尚未做（见 §5）。
+
 ---
 
 ## 4. ⬜ 待办（剩余任务全景）
@@ -81,7 +95,7 @@ cd frontend && npm run dev   # http://localhost:5173
 ### A. 检索质量专线（当前主战场，评测驱动）
 - ⬜ **阶段 3：Rerank 重排** ⭐下一个高价值项：bge-reranker，拉开"能答/不能答"分数差、修 #8/#55 漏召回。内网需验证 torch 或用 rerank API。
 - ⬜ **阶段 1：LangChain 适配层**：把阿里云 embedding 包成 `Embeddings` 子类、Chroma 接 `langchain_chroma`（rerank 的地基，可与阶段3合并做）。
-- ⬜ **阶段 5：检索配置页**：`ConfigPlaceholder.vue` 现为空占位 → 做成可在线调 top_k/阈值/JUDGE_ENABLED/prompt；后端参数按库存 MySQL。（你测起来会方便很多）
+- ✅ **阶段 5：检索配置页**（08-14 晚完成，未提交）：三级配置层次 + 在线可调 top_k/阈值/JUDGE_ENABLED/作答prompt，存 MySQL。剩：真机端到端验证 + commit。
 - ⬜ 阶段 2：混合检索 BM25+jieba（**已降级**，召回无短板，收益存疑，靠后）
 - ⬜ 阶段 4：多查询改写（召回补强）
 - ⬜ 阶段 6：降级开关 `RETRIEVAL_MODE`、补测、README、（可选）LangSmith
@@ -99,13 +113,20 @@ cd frontend && npm run dev   # http://localhost:5173
 
 ---
 
-## 5. ⚠️ 未提交改动（08-14）
+## 5. ⚠️ 未提交改动（08-14 晚：阶段5 检索配置页）
 
-今天改动尚未 commit。涉及文件：
-- 新增：`app/services/judge_service.py`、`scripts/eval_retrieval.py`、`scripts/eval_answer.py`、`tests/test_judge_service.py`、`eval/`（评测集+结果）
-- 修改：`app/api.py`、`app/config.py`、`app/services/{rag,knowledge_base,session}_service.py`、`requirements.txt`、`.env.example`、`启动后端.bat`、前端 `client.ts`/`useKnowledgeBase.ts`/`useSessions.ts`/`ChatView.vue`/`styles.css`、`tests/test_{kb_isolation,rag_service}.py`
+08-14 白天的一批（研判/徽标/选择器）**已提交**为 `078fe3b`。当前未提交的是**阶段5 检索配置页**：
+- 新增：`app/services/retrieval_config_service.py`、`tests/test_retrieval_config_service.py`、
+  `frontend/src/components/ConfigForm.vue`
+- 修改：`app/api.py`、`app/services/{answer,rag}_service.py`、
+  `frontend/src/api/client.ts`、`frontend/src/views/ConfigPlaceholder.vue`、`tests/test_rag_service.py`
+- 追加：保存结果弹窗（成功/失败都弹）+ 按级别正确文案（系统级=所有用户；租户/kb 级=仅自己）。
+  已真机验证：管理员改系统默认、普通用户改租户默认均保存成功并弹窗。
 
-建议提交信息主题：`feat: 答案层研判防幻觉 + 知识库范围选择器 + 徽标持久化`
+建议提交信息主题：`feat: 检索配置页（系统/租户/知识库三级参数在线可调，存 MySQL）`
+
+**提交前建议**：启动前后端真机点一遍（管理员改系统默认→保存刷新仍在；某库设独立阈值→问答日志阈值变化；
+普通用户读不到他人库配置）。
 
 ---
 
@@ -117,3 +138,7 @@ cd frontend && npm run dev   # http://localhost:5173
 4. **内网部署三件套**：代理(NO_PROXY)、证书(truststore)、端口(僵尸进程)。LLM功能"本地能调通≠部署能用"。
 5. **DeepSeek thinking 模型**不支持 response_format/强制 tool_choice → 研判用"提示输出JSON+正则解析"，别用 with_structured_output。
 6. **评测集是尺子**：任何"提升质量"的改动，先用 `eval/qa_set.json` 跑 before/after，数字说话再进下一步。
+7. **import-time 常量快照坑**：`rag_service` 用 `from app.config import RAG_TOP_K, RAG_MAX_DISTANCE, JUDGE_ENABLED`
+   把值绑成了模块自己的名字（import 时一次性快照）。**在线改配置光写库不会生效**，必须让运行时读取路径拿到新值。
+   阶段5 的解法：把这三项（+answer_prompt）做成 `answer_from_knowledge_base` 的显式形参，由 `/rag/ask`
+   先 `retrieval_config_service.resolve_effective()` 解析再传入。改这类"配置驱动行为"务必检查是否走了运行时读取。
