@@ -97,15 +97,28 @@ def ingest_document(document: Document, kb_id: int) -> dict:
     return {"filename": document.filename, "chunk_count": len(chunks)}
 
 
-def search(question: str, top_k: int, kb_id: int | None = None) -> list[dict]:
+def search(
+    question: str,
+    top_k: int,
+    kb_id: int | None = None,
+    kb_ids: list[int] | None = None,
+) -> list[dict]:
     """检索最相关的前 top_k 段文字（含来源）。
 
-    kb_id 非空时，只在该知识库范围内检索（Chroma where 过滤）；
-    kb_id 为 None 时全库检索（仅管理员的跨库场景使用）。
+    检索范围三选一（互斥，kb_ids 优先级最高）：
+    - kb_ids 非空：在这批知识库范围内检索（Chroma where kb_id $in 过滤）。用于「全部知识库」——
+      普通用户传入「自己拥有的所有库 id」，天然隔离，绝不会召回他人的库。
+    - kb_ids 为空列表 []：该用户没有任何库，直接返回 []（不做无谓查询）。
+    - kb_id 非空：只在该单个知识库检索（原有单库路径，行为不变）。
+    - 两者都为 None：真全库检索（仅管理员的跨库场景使用）。
 
     每一项包含：content、filename、chunk_index、distance（越小越像）。
     为提升质量：先多召回，过滤过短碎片，不足再补齐，保证不空。
     """
+    # kb_ids 优先：空列表表示「无任何库」，直接返回，避免误当成全库。
+    if kb_ids is not None and len(kb_ids) == 0:
+        return []
+
     collection = get_collection()
 
     total = collection.count()
@@ -121,7 +134,10 @@ def search(question: str, top_k: int, kb_id: int | None = None) -> list[dict]:
         "query_embeddings": [query_vector],
         "n_results": candidate_k,
     }
-    if kb_id is not None:
+    # 范围过滤：kb_ids（多库）优先于 kb_id（单库）；都为 None 则不过滤（全库）。
+    if kb_ids is not None:
+        query_kwargs["where"] = {"kb_id": {"$in": kb_ids}}
+    elif kb_id is not None:
         query_kwargs["where"] = {"kb_id": kb_id}
 
     result = collection.query(**query_kwargs)

@@ -85,7 +85,9 @@ def require_kb_access(kb_id: int, current_user: dict) -> dict:
 # ===== 请求/响应模型 =====
 class RagAskRequest(BaseModel):
     question: str
-    kb_id: int
+    # kb_id 为 None 表示「全部知识库」——普通用户=自己拥有的所有库，管理员=全系统。
+    # 传具体 id 则只在该单库问答（原有行为）。
+    kb_id: int | None = None
 
 
 class IngestRequest(BaseModel):
@@ -144,6 +146,8 @@ class AppendMessageRequest(BaseModel):
     role: str
     content: str
     sources: list = []
+    # 研判结果（assistant 消息可带）：{answerable, reason, confidence}。存库以便刷新会话后仍能显示徽标。
+    verdict: dict | None = None
 
 
 class CreateTopicRequest(BaseModel):
@@ -698,6 +702,7 @@ def append_session_message(
         role=request.role,
         content=request.content,
         sources=request.sources,
+        verdict=request.verdict,
     )
     if result is None:
         raise HTTPException(status_code=404, detail="会话不存在或无权访问")
@@ -706,18 +711,50 @@ def append_session_message(
 
 @app.post("/rag/ask")
 def ask_rag(request: RagAskRequest, current_user: dict = Depends(get_current_user)):
-    """在指定知识库范围内问答。"""
-    require_kb_access(request.kb_id, current_user)
+    """知识库问答。
+
+    kb_id 指定单库：校验访问权后只在该库检索（原有行为）。
+    kb_id 为 None（「全部知识库」）：按角色限定检索范围，严守多租户隔离——
+    - 普通用户：只在「自己拥有的所有库」范围内检索，绝不会召回他人的库；
+    - 管理员：真全库跨库检索。
+    """
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
 
-    result = answer_from_knowledge_base(
-        question=request.question,
-        top_k=RAG_TOP_K,
-        kb_id=request.kb_id,
-    )
+    if request.kb_id is not None:
+        # 单库：沿用原有归属校验 + 单库检索。
+        require_kb_access(request.kb_id, current_user)
+        result = answer_from_knowledge_base(
+            question=request.question,
+            top_k=RAG_TOP_K,
+            kb_id=request.kb_id,
+        )
+    else:
+        # 全部：按角色限定范围。
+        is_admin = current_user.get("role") == user_service.ROLE_ADMIN
+        if is_admin:
+            # 管理员真全库（kb_id/kb_ids 都不传 → 不过滤）。
+            result = answer_from_knowledge_base(
+                question=request.question,
+                top_k=RAG_TOP_K,
+            )
+        else:
+            # 普通用户：把范围限定到自己拥有的所有库 —— 天然隔离，不泄露他人数据。
+            my_kbs = kb_service.list_by_owner(current_user.get("id"))
+            my_ids = [kb["id"] for kb in my_kbs]
+            result = answer_from_knowledge_base(
+                question=request.question,
+                top_k=RAG_TOP_K,
+                kb_ids=my_ids,
+            )
+
     return {
         "question": request.question,
         "answer": result["answer"],
         "sources": result["sources"],
+        # 研判结果（防幻觉）：answerable=false 表示拒答，reason 说明原因，confidence 可信度。
+        # 供前端展示拒答/低可信徽标。研判关闭时上层也会给出默认值（answerable=true）。
+        "answerable": result.get("answerable", True),
+        "reason": result.get("reason", ""),
+        "confidence": result.get("confidence", "high"),
     }

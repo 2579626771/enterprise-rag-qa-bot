@@ -67,6 +67,29 @@ def _load_sources(raw) -> list:
         return []
 
 
+def _dump_verdict(verdict) -> Optional[str]:
+    """把研判结果 {answerable, reason, confidence} 序列化为 JSON 文本。空则存 NULL。"""
+    if not verdict:
+        return None
+    try:
+        return json.dumps(verdict, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_verdict(raw):
+    """把存储的研判 JSON 文本反序列化为 dict。空/异常时返回 None（前端据此不显示徽标）。"""
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _session_public(row: dict) -> dict:
     return {
         "id": row["id"],
@@ -84,6 +107,7 @@ def _message_public(row: dict) -> dict:
         "role": row.get("role") or "user",
         "content": row.get("content") or "",
         "sources": _load_sources(row.get("sources")),
+        "verdict": _load_verdict(row.get("verdict")),
         "created_at": _fmt_time(row.get("created_at")),
     }
 
@@ -169,6 +193,7 @@ class InMemorySessionRepo:
         role: str,
         content: str,
         sources=None,
+        verdict=None,
     ) -> Optional[dict]:
         row = self._owned(session_id, user_id)
         if row is None:
@@ -181,6 +206,7 @@ class InMemorySessionRepo:
             "role": role,
             "content": content,
             "sources": _dump_sources(sources),
+            "verdict": _dump_verdict(verdict),
             "created_at": now,
         }
         self._messages[msg["id"]] = msg
@@ -214,6 +240,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     role        VARCHAR(16)  NOT NULL DEFAULT 'user',
     content     TEXT,
     sources     TEXT,
+    verdict     TEXT,
     created_at  DATETIME     NOT NULL,
     PRIMARY KEY (id),
     KEY idx_session (session_id)
@@ -246,6 +273,16 @@ class MySQLSessionRepo:
             with conn.cursor() as cur:
                 cur.execute(_CREATE_SESSIONS_SQL)
                 cur.execute(_CREATE_MESSAGES_SQL)
+                # 存量表补列：早于「研判」上线建的 chat_messages 没有 verdict 列，
+                # 这里检查缺失则补上（nullable，不影响存量数据）。与项目「自动建表/自动迁移」一致。
+                cur.execute(
+                    "SELECT COUNT(*) AS c FROM information_schema.columns "
+                    "WHERE table_schema = %s AND table_name = 'chat_messages' "
+                    "AND column_name = 'verdict'",
+                    (MYSQL_DATABASE,),
+                )
+                if (cur.fetchone() or {}).get("c", 0) == 0:
+                    cur.execute("ALTER TABLE chat_messages ADD COLUMN verdict TEXT NULL AFTER sources")
             conn.commit()
         finally:
             conn.close()
@@ -359,7 +396,7 @@ class MySQLSessionRepo:
                 if self._get_owned_row(cur, session_id, user_id) is None:
                     return None
                 cur.execute(
-                    "SELECT id, role, content, sources, created_at "
+                    "SELECT id, role, content, sources, verdict, created_at "
                     "FROM chat_messages WHERE session_id = %s ORDER BY id ASC",
                     (session_id,),
                 )
@@ -375,6 +412,7 @@ class MySQLSessionRepo:
         role: str,
         content: str,
         sources=None,
+        verdict=None,
     ) -> Optional[dict]:
         now = datetime.now()
         conn = self._connect()
@@ -384,9 +422,9 @@ class MySQLSessionRepo:
                 if row is None:
                     return None
                 cur.execute(
-                    "INSERT INTO chat_messages (session_id, role, content, sources, created_at) "
-                    "VALUES (%s, %s, %s, %s, %s)",
-                    (session_id, role, content, _dump_sources(sources), now),
+                    "INSERT INTO chat_messages (session_id, role, content, sources, verdict, created_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s)",
+                    (session_id, role, content, _dump_sources(sources), _dump_verdict(verdict), now),
                 )
                 new_id = cur.lastrowid
                 # 更新会话时间；首条 user 消息且标题仍默认时用它更新标题。
@@ -409,6 +447,7 @@ class MySQLSessionRepo:
             "role": role,
             "content": content,
             "sources": _load_sources(_dump_sources(sources)),
+            "verdict": _load_verdict(_dump_verdict(verdict)),
             "created_at": _fmt_time(now),
         }
 
@@ -476,9 +515,10 @@ def append_message(
     role: str,
     content: str,
     sources=None,
+    verdict=None,
 ) -> Optional[dict]:
     """向会话追加一条消息。非本人会话返回 None。"""
-    return _get_repo().append_message(session_id, user_id, role, content, sources)
+    return _get_repo().append_message(session_id, user_id, role, content, sources, verdict)
 
 
 # ---- 测试辅助 ----

@@ -78,11 +78,21 @@ export interface Source {
   content: string
 }
 
-// POST /rag/ask 返回 { question, answer, sources }
+// 研判结果（防幻觉）：随 /rag/ask 返回，也随会话消息持久化。
+export interface Verdict {
+  answerable: boolean
+  reason: string
+  confidence: 'high' | 'low' | string
+}
+
+// POST /rag/ask 返回 { question, answer, sources, answerable, reason, confidence }
 export interface AskResponse {
   question: string
   answer: string
   sources: Source[]
+  answerable?: boolean
+  reason?: string
+  confidence?: 'high' | 'low' | string
 }
 
 // GET /stats 返回知识库聚合统计
@@ -134,8 +144,8 @@ export async function deleteDocument(filename: string, kbId: number): Promise<vo
   })
 }
 
-/** 在指定知识库范围内提问 */
-export async function askQuestion(question: string, kbId: number): Promise<AskResponse> {
+/** 在指定知识库范围内提问；kbId 传 null 表示「全部知识库」（后端按角色限定范围） */
+export async function askQuestion(question: string, kbId: number | null): Promise<AskResponse> {
   const { data } = await http.post<AskResponse>('/rag/ask', { question, kb_id: kbId })
   return data
 }
@@ -415,6 +425,7 @@ export interface SessionMessage {
   role: 'user' | 'assistant'
   content: string
   sources: Source[]
+  verdict?: Verdict | null
   created_at: string
 }
 
@@ -459,11 +470,13 @@ export async function appendSessionMessage(
   role: 'user' | 'assistant',
   content: string,
   sources: Source[] = [],
+  verdict: Verdict | null = null,
 ): Promise<SessionMessage> {
   const { data } = await http.post<SessionMessage>(`/sessions/${id}/messages`, {
     role,
     content,
     sources,
+    verdict,
   })
   return data
 }

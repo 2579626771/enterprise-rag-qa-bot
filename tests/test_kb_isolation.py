@@ -209,6 +209,56 @@ class TestKbIsolation(unittest.TestCase):
         # 物理目录被清除
         self.assertFalse(kb_dir.exists())
 
+    # ===== 「全部知识库」（kb_id 不传 / 为 None）范围与隔离 =====
+
+    def test_ask_all_scopes_to_own_kbs(self):
+        """普通用户选「全部」：只召回自己所有库的内容，绝不召回他人库（核心隔离）。"""
+        alice_h = self._hdr("alice", "alice123")
+        bob_h = self._hdr("bob", "bob123")
+
+        # Alice 再建一个库，两个库各放不同内容
+        alice_kb2 = self.client.post("/kbs", json={"name": "Alice库2"}, headers=alice_h).json()["id"]
+        self._kb_dirs.append(alice_kb2)
+        self._upload(alice_h, self.alice_kb, "a1.txt", "苹果这个词只出现在Alice的第一个库里。")
+        self._upload(alice_h, alice_kb2, "a2.txt", "香蕉这个词只出现在Alice的第二个库里。")
+        # Bob 库放一个带独特词的机密内容
+        self._upload(bob_h, self.bob_kb, "b.txt", "菠萝这个机密词只属于Bob的库。")
+
+        # Alice 选「全部」(kb_id 不传) 问自己两个库的词 —— 都应召回
+        r1 = self.client.post("/rag/ask", json={"question": "苹果在哪个库？"}, headers=alice_h)
+        self.assertEqual(r1.status_code, 200)
+        self.assertTrue(len(r1.json()["sources"]) >= 1)
+        r2 = self.client.post("/rag/ask", json={"question": "香蕉在哪个库？"}, headers=alice_h)
+        self.assertTrue(len(r2.json()["sources"]) >= 1)
+
+        # Alice 选「全部」问 Bob 库的机密词 —— 绝不能召回到 Bob 的来源
+        leak = self.client.post("/rag/ask", json={"question": "菠萝这个机密词是什么？"}, headers=alice_h)
+        self.assertEqual(leak.status_code, 200)
+        srcs = leak.json()["sources"]
+        self.assertFalse(
+            any("菠萝" in s.get("content", "") or s.get("filename") == "b.txt" for s in srcs),
+            "普通用户选『全部』竟召回到他人库内容——多租户隔离被破坏！",
+        )
+
+    def test_ask_all_admin_cross_kb(self):
+        """管理员选「全部」：真跨库，能召回任意用户库的内容。"""
+        alice_h = self._hdr("alice", "alice123")
+        admin_h = self._hdr("admin", "admin123")
+        self._upload(alice_h, self.alice_kb, "a.txt", "西瓜这个词藏在Alice的库里，管理员应能跨库找到。")
+
+        r = self.client.post("/rag/ask", json={"question": "西瓜藏在哪里？"}, headers=admin_h)
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(len(r.json()["sources"]) >= 1)
+
+    def test_ask_all_user_without_kb_returns_empty(self):
+        """没有任何库的普通用户选「全部」：返回空来源，不报错、不越权。"""
+        # 新建一个无库用户
+        user_service.create_user("carol", "carol123", role="user")
+        carol_h = self._hdr("carol", "carol123")
+        r = self.client.post("/rag/ask", json={"question": "随便问点什么？"}, headers=carol_h)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["sources"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

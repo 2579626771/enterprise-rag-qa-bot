@@ -41,6 +41,18 @@ EMBEDDING_CONCURRENCY = int(_env.get("EMBEDDING_CONCURRENCY", "5"))
 ANSWER_PROVIDER = _env.get("ANSWER_PROVIDER","deepseek")
 DEEPSEEK_API_KEY = _env.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_CHAT_MODEL=_env.get("DEEPSEEK_CHAT_MODEL","deepseek-v4-pro")
+# DeepSeek 的 OpenAI 兼容基址。答案层「研判」用 LangChain 的 ChatOpenAI 走这个基址。
+# 现有 answer_service 用 urllib 直连 /chat/completions；judge 复用同一账号但走 OpenAI 兼容端点。
+DEEPSEEK_BASE_URL = _env.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+
+# ===== 答案层「研判」防幻觉 =====
+# 背景：评测(见 eval/)证明——主题相关但库里没答案的问题(hard-negative)，其检索距离
+# 与「真能回答」的问题几乎完全重叠，单靠 RAG_MAX_DISTANCE 距离阈值无法区分，导致大模型
+# 拿「答非所问」的片段硬编、产生幻觉(基线幻觉风险率 91.7%)。
+# 研判层：作答时先让 LLM 判断「这些资料是否真能回答该问题」，不能答就明确拒答。
+# JUDGE_ENABLED：是否启用研判层。默认关闭(false)保守上线——关闭时问答行为与引入前完全一致，
+#   出任何问题可一键切回。验证有效后再在生产 .env 打开。
+JUDGE_ENABLED = _env.get("JUDGE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 # 向量库（Chroma）相关配置
 # CHROMA_DIR：向量库存在硬盘上的目录，程序重启后数据还在。

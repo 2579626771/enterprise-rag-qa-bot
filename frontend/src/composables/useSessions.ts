@@ -1,6 +1,7 @@
 import { ref, computed } from 'vue'
 import {
   type Source,
+  type Verdict,
   type SessionSummary,
   type SessionMessage,
   listSessions,
@@ -18,6 +19,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   sources?: Source[]
+  verdict?: Verdict | null
 }
 
 // 一个问答会话（本地视图模型）
@@ -50,7 +52,7 @@ function fromSummary(s: SessionSummary): Session {
 }
 
 function toChatMessage(m: SessionMessage): ChatMessage {
-  return { id: m.id, role: m.role, content: m.content, sources: m.sources }
+  return { id: m.id, role: m.role, content: m.content, sources: m.sources, verdict: m.verdict ?? null }
 }
 
 // 从后端加载会话列表（登录后首次进入时调用）。
@@ -146,6 +148,7 @@ export function useSessions() {
       msg.role,
       msg.content,
       msg.sources ?? [],
+      msg.verdict ?? null,
     )
     const s = sessions.value.find((x) => x.sessionId === sessionId)
     if (!s) return

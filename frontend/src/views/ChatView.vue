@@ -59,6 +59,21 @@
     <section class="answer-area" aria-label="对话">
       <div v-if="currentMessages.length" class="chat-panel">
         <div v-for="msg in currentMessages" :key="msg.id" :class="['bubble', msg.role]">
+          <!-- 研判徽标（仅助手消息）：拒答 → 资料不足；低可信 → 谨慎参考 -->
+          <div
+            v-if="msg.role === 'assistant' && msg.verdict && msg.verdict.answerable === false"
+            class="verdict-badge refuse"
+          >
+            <i class="fa-solid fa-triangle-exclamation"></i>
+            <span>资料不足，未作答<template v-if="msg.verdict.reason"> · {{ msg.verdict.reason }}</template></span>
+          </div>
+          <div
+            v-else-if="msg.role === 'assistant' && msg.verdict && msg.verdict.confidence === 'low'"
+            class="verdict-badge low"
+          >
+            <i class="fa-solid fa-circle-info"></i>
+            <span>资料有限，回答仅供参考</span>
+          </div>
           <p>{{ msg.content }}</p>
           <div v-if="msg.sources?.length" class="sources">
             <details v-for="(s, i) in msg.sources" :key="i" class="source-chip">
@@ -98,10 +113,39 @@
   <!-- 底部输入 -->
   <footer class="composer">
     <div class="input-wrap">
+      <!-- 知识库范围选择器：默认「全部」，可选具体某个库 -->
+      <details class="kb-picker" ref="kbPicker">
+        <summary :title="scopeLabel">
+          <i class="fa-solid fa-database"></i>
+          <span class="kb-picker-label">{{ scopeLabel }}</span>
+          <i class="fa-solid fa-chevron-down kb-picker-caret"></i>
+        </summary>
+        <div class="kb-picker-menu">
+          <button
+            type="button"
+            :class="{ active: currentKbId === ALL_KB_ID }"
+            @click="pickKb(ALL_KB_ID)"
+          >
+            <i class="fa-solid fa-layer-group"></i> 全部知识库
+          </button>
+          <div class="kb-picker-divider"></div>
+          <button
+            v-for="kb in kbList"
+            :key="kb.id"
+            type="button"
+            :class="{ active: currentKbId === kb.id }"
+            @click="pickKb(kb.id)"
+          >
+            <i class="fa-solid fa-book"></i> {{ kb.name }}
+          </button>
+          <div v-if="kbList.length === 0" class="kb-picker-empty">还没有知识库</div>
+        </div>
+      </details>
+
       <input
         v-model="draft"
         type="text"
-        :placeholder="currentKb ? `向「${currentKb.name}」提问…` : '输入问题，向知识库提问…'"
+        :placeholder="`向「${scopeLabel}」提问…`"
         @keydown.enter="send"
       />
       <button class="plain-icon" type="button" aria-label="附件"><i class="fa-solid fa-paperclip"></i></button>
@@ -143,11 +187,21 @@ const quickQuestions = [
   '总结一下核心要点',
 ]
 
-const { currentKbId, currentKb } = useKnowledgeBase()
+const { ALL_KB_ID, kbList, currentKbId, currentKb, selectKb } = useKnowledgeBase()
 
 const filter = ref<'all' | 'favorite'>('all')
 const draft = ref('')
 const asking = ref(false)
+const kbPicker = ref<HTMLDetailsElement | null>(null)
+
+// 当前检索范围的显示名：全部 → 「全部知识库」；否则为库名。
+const scopeLabel = computed(() => (currentKbId.value === ALL_KB_ID ? '全部知识库' : currentKb.value?.name ?? '全部知识库'))
+
+function pickKb(id: number) {
+  selectKb(id)
+  // 选完收起下拉
+  if (kbPicker.value) kbPicker.value.open = false
+}
 
 const favoriteCount = computed(() => sessions.value.filter((s) => s.isFavorite).length)
 const visibleSessions = computed(() =>
@@ -168,19 +222,20 @@ async function onRename(sessionId: number) {
 async function send() {
   const question = draft.value.trim()
   if (!question || asking.value) return
-  if (!currentKbId.value) {
-    const sid = await ensureCurrent()
-    await appendMessage(sid, { role: 'assistant', content: '请先在「我的知识库」选择或创建一个知识库。' })
-    return
-  }
 
   const sid = await ensureCurrent()
   await appendMessage(sid, { role: 'user', content: question })
   draft.value = ''
   asking.value = true
   try {
-    const res = await askQuestion(question, currentKbId.value)
-    await appendMessage(sid, { role: 'assistant', content: res.answer, sources: res.sources })
+    // currentKbId 为 0（全部）时传 null，后端按角色限定范围（普通用户=自己所有库）。
+    const res = await askQuestion(question, currentKbId.value || null)
+    // 研判结果（防幻觉）：随消息存库，刷新会话后仍能显示徽标。
+    const verdict =
+      res.answerable === undefined
+        ? null
+        : { answerable: res.answerable, reason: res.reason ?? '', confidence: res.confidence ?? 'high' }
+    await appendMessage(sid, { role: 'assistant', content: res.answer, sources: res.sources, verdict })
   } catch (e) {
     await appendMessage(sid, { role: 'assistant', content: `出错了：${extractErrorMessage(e)}` })
   } finally {
