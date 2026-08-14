@@ -85,6 +85,19 @@ ALIYUN_RERANK_URL = _env.get(
     "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
 )
 
+# ===== 多查询改写（multi-query）·检索质量专线阶段4 =====
+# 背景：rerank 精排解决不了「压根没召回进候选池」的漏召回（#8/#55），且用户问法与文档
+# 措辞不一致时单条查询可能错过相关片段。多查询从**召回侧**补强：LLM 把原问题改写成若干
+# 语义等价、措辞不同的查询，各自召回后合并去重，用多个入口覆盖同一答案的不同表述，提升 Recall。
+# MULTI_QUERY_ENABLED：是否启用。默认关闭(false)——开启会多一次 LLM 调用(~2-8s)且多路召回，
+#   出问题可一键切回。评测(eval_retrieval before/after)验证有效后再在生产 .env 打开。
+# MULTI_QUERY_COUNT：改写条数（原查询之外额外生成几条）。默认 3。
+# QUERY_REWRITE_PROVIDER：deepseek（真实）/ fake（确定性，供单测零网络）。
+# 隔离红线：所有改写查询共用同一个 where=kb_id 过滤，范围不变，普通用户「全部」仍只查自己库。
+MULTI_QUERY_ENABLED = _env.get("MULTI_QUERY_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+MULTI_QUERY_COUNT = int(_env.get("MULTI_QUERY_COUNT", "3"))
+QUERY_REWRITE_PROVIDER = _env.get("QUERY_REWRITE_PROVIDER", "deepseek")
+
 # ===== MySQL（文档元数据持久化）=====
 # 存放文档的分类/描述/上传时间/状态等元数据，替换早期前端 localStorage 占位。
 # MYSQL_ENABLED：是否启用 MySQL。为空或数据库不可用时，后端自动降级为“内存元数据”，

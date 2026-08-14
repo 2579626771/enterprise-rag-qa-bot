@@ -3,13 +3,13 @@
 > **这份文件是"会话记忆锚点"**：任何新会话开始时，先读这份文件即可恢复完整上下文——当前进度、已完成、待办、怎么启动、有哪些坑。
 > 每完成一块工作就更新这里。详细技术复盘见 `../Thinking_and_learning/Enterprise_RAG/KNOWLEDGE_NOTES.md`（#1–#77），每日进度见同目录 `daily_tasks.md`。
 >
-> **最后更新：2026-08-14（晚·阶段1 LangChain 地基 + 阶段3 rerank）**
+> **最后更新：2026-08-14（深夜·阶段4 多查询改写）**
 
 ---
 
 ## 0. 一句话现状
 
-企业级多租户 RAG 问答系统，核心链路 + 认证 + 多租户隔离 + **答案层研判防幻觉** 均已完成并真机验证。整体完成度 **约 87%**（面向"企业级可上线"）。**唯一剩的 P0 是部署工程化**；检索质量专线：LangChain 地基已落地，rerank 已接入但**评测证明整体伤召回、默认关**（详见 §3/§4.A），下一步价值点转向 **调 rerank 融合策略** 或 **多查询改写**。
+企业级多租户 RAG 问答系统，核心链路 + 认证 + 多租户隔离 + **答案层研判防幻觉** 均已完成并真机验证。整体完成度 **约 88%**（面向"企业级可上线"）。**唯一剩的 P0 是部署工程化**；检索质量专线：LangChain 地基已落地；检索增强做了三项且均**评测驱动、默认关、可一键开**——rerank（伤召回、弃）、**多查询改写（MRR 0.776→0.807 正向、零误伤，因慢默认关）**。剩余增强项：混合检索/调 rerank 融合。
 
 ---
 
@@ -109,6 +109,22 @@ cd frontend && npm run dev   # http://localhost:5173
     → 决策：**代码/开关/测试全保留，默认 `RERANK_ENABLED=false`**（可一键开）；作为已验证的负面结论归档，
     下一步优先**调 rerank 融合策略**（只重排 top_k*2、或 rerank 分与距离加权）或**多查询改写**。
 
+**检索质量专线：阶段4 多查询改写（08-14 深夜，未提交）**
+- 新增 `app/services/query_rewrite_service.py`：DeepSeek urllib 直连（仿 answer_service）把原问题改写成
+  N 条语义等价查询；`QUERY_REWRITE_PROVIDER=fake` 确定性分支；**失败降级返回 []（只用原查询）**，绝不中断检索。
+- `search()` 接入多查询：原查询 + N 条改写各召回 candidate_k，按 `(filename, chunk_index)` **去重保留最小
+  distance**，合并后按距离升序交给下游 rerank/阈值。**所有查询共用同一 where=kb_id 过滤——只扩召回入口、
+  不扩范围，隔离红线不受影响。** 原查询始终保底。config 加 `MULTI_QUERY_ENABLED`(默认 false)/`MULTI_QUERY_COUNT`(3)/
+  `QUERY_REWRITE_PROVIDER`。
+- 测试：新增 `test_query_rewrite_service.py`（改写/降级）、扩 `test_rag_service.py`（合并去重 + distance 保留）、
+  扩 `test_kb_isolation.py`（**多查询开启下隔离红线回归**）。**193 → 200 全绿**。
+- **✅ 评测结论（真调 DeepSeek 改写 + 阿里云 embedding，`eval/result_multiquery.json` vs `result_lc_base.json`）**：
+  **正向改进** —— MRR **0.776→0.807**（3 题升到 @1）、平均命中距离 0.224→0.214、**Hit@5 保持 94.7% 零误伤**
+  （优于 rerank，rerank 掉 2 道正例）。但 **#8/#55 仍未修**（detail/partial 型漏召回，改写也没召回进 top5），
+  且**慢**——多一次 LLM 调用，评测 62 题跑 7+ 分钟（约 8-10s/题）。
+  → 决策：**代码/开关/测试全保留，默认 `MULTI_QUERY_ENABLED=false`**（因慢，要用手动翻开；适合"质量优先胜过
+  延迟"的场景）。正向结论归档。
+
 ---
 
 ## 4. ⬜ 待办（剩余任务全景）
@@ -118,9 +134,13 @@ cd frontend && npm run dev   # http://localhost:5173
   距离零漂移。作为 rerank/多查询的地基。
 - ⚠️ **阶段 3：Rerank 重排**（08-14 晚接入，**评测证明伤召回、默认关**）：gte-rerank-v2 API 已接，
   Hit@5 94.7%→89.5%，未修 #8/#55。代码/开关保留。**下一步：调融合策略再评**（只重排 top_k*2 或分数加权）。
-- ⬜ **阶段 4：多查询改写**（召回补强）——rerank 不理想后，这可能是更稳的召回增强项，可优先。
+- ⬜ **阶段 4：多查询改写**（08-14 深夜完成，**评测正向、默认关**）：DeepSeek 改写原问题成 N 条，多路召回合并去重。
+  MRR 0.776→0.807、Hit@5 零误伤，但慢(+8-10s/题)、未修 #8/#55。代码/开关保留，`MULTI_QUERY_ENABLED=false`。
 - ⬜ 阶段 2：混合检索 BM25+jieba（**已降级**，召回无短板，收益存疑，靠后）
+- ⬜ 调 rerank 融合策略（只重排 top_k*2 / rerank 分与距离加权）——想救 rerank 再做
 - ⬜ 阶段 6：降级开关 `RETRIEVAL_MODE`、补测、README、（可选）LangSmith
+- 💡 **#8/#55 仍是硬骨头**：rerank 和多查询都没修好，可能是 chunk 切分粒度问题（答案跨段/被切碎），
+  下一步可查这两题的 gold chunk 实际入库形态，而非继续堆检索增强。
 
 ### B. 离"可上线"还差的（专线之外）
 - ⬜ **P0 部署方案**（唯一硬门槛）：后端 Docker 化 + 前端构建托管 + Nginx 反代 + 生产 `.env` + 进程守护。**别忘 NO_PROXY！**
@@ -145,9 +165,15 @@ cd frontend && npm run dev   # http://localhost:5173
   - 修改：`app/services/knowledge_base_service.py`、`app/config.py`、`.env`、
     `tests/test_rag_service.py`、`tests/test_kb_isolation.py`、`PROJECT_STATUS.md`
   - 建议提交信息：`feat: 检索质量专线 阶段1 LangChain 地基 + 阶段3 rerank(默认关，评测伤召回归档)`
+- `7975ce2` **阶段1 LangChain 地基 + 阶段3 rerank(默认关)**——已提交，193 测试全绿
+- **阶段4 多查询改写（本次）**：待提交。200 测试全绿。
+  - 新增：`app/services/query_rewrite_service.py`、`tests/test_query_rewrite_service.py`、`eval/result_multiquery.json`
+  - 修改：`app/services/knowledge_base_service.py`、`app/config.py`、`.env`、
+    `tests/test_rag_service.py`、`tests/test_kb_isolation.py`、`PROJECT_STATUS.md`
+  - 建议提交信息：`feat: 检索质量专线 阶段4 多查询改写(默认关，评测 MRR 0.776→0.807 正向)`
 - 本地 `master` 领先 `origin/main`，尚未 `git push`（等确认后再推）。
 
-> 下一战场：**P0 部署工程化**（唯一硬门槛）或 **检索专线阶段4 多查询改写 / 调 rerank 融合**。
+> 下一战场：**P0 部署工程化**（唯一硬门槛，用户已定放最后）；或检索专线收尾（查 #8/#55 切分 / 阶段6 降级开关）。
 
 ---
 

@@ -278,6 +278,43 @@ class TestKbIsolation(unittest.TestCase):
             config.RERANK_ENABLED = orig_enabled
             rerank_service.RERANK_PROVIDER = orig_provider
 
+    def test_ask_all_scopes_to_own_kbs_with_multi_query(self):
+        """隔离红线回归：开启多查询改写后，普通用户选「全部」仍只召回自己库，绝不越库。
+
+        多查询把原问题改写成多条查询，但每条都共用同一个 where=kb_id 过滤——只扩召回入口、
+        不扩范围。本用例确保接入多查询没有意外泄露他人库内容（红线功能必须有回归保护）。
+        """
+        import app.config as config
+        import app.services.query_rewrite_service as qr
+
+        orig_enabled = config.MULTI_QUERY_ENABLED
+        orig_provider = qr.QUERY_REWRITE_PROVIDER
+        config.MULTI_QUERY_ENABLED = True
+        qr.QUERY_REWRITE_PROVIDER = "fake"  # 确定性、零网络
+        try:
+            alice_h = self._hdr("alice", "alice123")
+            bob_h = self._hdr("bob", "bob123")
+            self._upload(alice_h, self.alice_kb, "a1.txt", "苹果这个词只出现在Alice的库里。")
+            self._upload(bob_h, self.bob_kb, "b.txt", "菠萝这个机密词只属于Bob的库。")
+
+            own = self.client.post("/rag/ask", json={"question": "苹果在哪个库？"}, headers=alice_h)
+            self.assertEqual(own.status_code, 200)
+            self.assertTrue(len(own.json()["sources"]) >= 1)
+
+            # 开着多查询，Alice 选「全部」问 Bob 的机密词 —— 仍绝不能召回 Bob 来源
+            leak = self.client.post(
+                "/rag/ask", json={"question": "菠萝这个机密词是什么？"}, headers=alice_h
+            )
+            self.assertEqual(leak.status_code, 200)
+            srcs = leak.json()["sources"]
+            self.assertFalse(
+                any("菠萝" in s.get("content", "") or s.get("filename") == "b.txt" for s in srcs),
+                "开启多查询后普通用户『全部』竟召回他人库内容——多租户隔离被破坏！",
+            )
+        finally:
+            config.MULTI_QUERY_ENABLED = orig_enabled
+            qr.QUERY_REWRITE_PROVIDER = orig_provider
+
     def test_ask_all_admin_cross_kb(self):
         """管理员选「全部」：真跨库，能召回任意用户库的内容。"""
         alice_h = self._hdr("alice", "alice123")

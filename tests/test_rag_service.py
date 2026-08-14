@@ -193,6 +193,48 @@ class TestRagService(unittest.TestCase):
         finally:
             config.RERANK_ENABLED = orig_enabled
 
+    def test_multi_query_enabled_merges_and_keeps_distance(self):
+        # 开启多查询（fake 改写）：原查询+改写多路召回合并去重，来源仍保留 filename/content/distance。
+        # 多查询只扩召回入口、按最小距离去重，不改隔离范围。
+        import app.config as config
+        import app.services.query_rewrite_service as qr
+
+        orig_enabled = config.MULTI_QUERY_ENABLED
+        orig_provider = qr.QUERY_REWRITE_PROVIDER
+        config.MULTI_QUERY_ENABLED = True
+        qr.QUERY_REWRITE_PROVIDER = "fake"
+        try:
+            self._ingest_demo(kb_id=1)
+            result = answer_from_knowledge_base(
+                question="怎么上传文档？", top_k=2, max_distance=1.0, kb_id=1
+            )
+            self.assertTrue(len(result["sources"]) >= 1)
+            for s in result["sources"]:
+                self.assertIn("filename", s)
+                self.assertIn("content", s)
+            # 去重保证：同一 (filename, chunk_index) 不应在 sources 里重复出现。
+            keys = [(s["filename"], s.get("chunk_index")) for s in result["sources"]]
+            self.assertEqual(len(keys), len(set(keys)))
+        finally:
+            config.MULTI_QUERY_ENABLED = orig_enabled
+            qr.QUERY_REWRITE_PROVIDER = orig_provider
+
+    def test_multi_query_disabled_matches_baseline(self):
+        # 关闭多查询：只用原查询，行为与阶段1 一致。
+        import app.config as config
+
+        orig_enabled = config.MULTI_QUERY_ENABLED
+        config.MULTI_QUERY_ENABLED = False
+        try:
+            self._ingest_demo(kb_id=1)
+            result = answer_from_knowledge_base(
+                question="怎么读取文档内容？", top_k=2, kb_id=1
+            )
+            self.assertTrue(len(result["sources"]) >= 1)
+            self.assertEqual(result["sources"][0]["filename"], "rag_demo.txt")
+        finally:
+            config.MULTI_QUERY_ENABLED = orig_enabled
+
 
 if __name__ == "__main__":
     unittest.main()

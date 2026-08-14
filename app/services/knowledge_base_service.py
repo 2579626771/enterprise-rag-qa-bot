@@ -161,21 +161,41 @@ def search(
     from app.services.langchain_adapters import build_chroma_vectorstore
 
     vectorstore = build_chroma_vectorstore(_get_public_client(), collection.name)
-    scored = vectorstore.similarity_search_with_score(
-        question, k=candidate_k, filter=where
-    )
 
-    candidates = []
-    for doc, distance in scored:
-        metadata = doc.metadata or {}
-        candidates.append(
-            {
+    # ★多查询改写（multi-query，阶段4）★
+    # 从召回侧补强 Recall：把原问题改写成若干语义等价、措辞不同的查询，原查询 + 改写各自
+    # 召回 candidate_k 条，按 (filename, chunk_index) 去重、保留最小 distance（离得最近的那次
+    # 命中）。所有查询共用同一个 where 过滤——范围不变，隔离红线不受影响。原查询始终保底参与，
+    # 改写只做补充。MULTI_QUERY_ENABLED=false 时只用原查询，行为与阶段1/3 完全一致。
+    # 改写失败会自动降级为空列表（只用原查询），绝不中断检索。
+    from app.config import MULTI_QUERY_ENABLED, MULTI_QUERY_COUNT
+
+    queries = [question]
+    if MULTI_QUERY_ENABLED:
+        from app.services import query_rewrite_service
+
+        rewrites = query_rewrite_service.rewrite(question, n=MULTI_QUERY_COUNT)
+        queries.extend(rewrites)
+
+    # 多路召回合并：key=(filename, chunk_index)，值取「最小 distance」的那条候选。
+    merged: dict[tuple, dict] = {}
+    for q in queries:
+        scored = vectorstore.similarity_search_with_score(q, k=candidate_k, filter=where)
+        for doc, distance in scored:
+            metadata = doc.metadata or {}
+            key = (metadata.get("filename", ""), metadata.get("chunk_index", -1))
+            cand = {
                 "content": doc.page_content,
                 "filename": metadata.get("filename", ""),
                 "chunk_index": metadata.get("chunk_index", -1),
                 "distance": distance,
             }
-        )
+            # 同一片段被多条查询召回时，保留距离最小（最相关）的那次，避免重复且不丢最优分。
+            if key not in merged or distance < merged[key]["distance"]:
+                merged[key] = cand
+
+    # 按 distance 升序，得到与「单查询召回」同构的候选列表（下游 rerank/过滤逻辑完全复用）。
+    candidates = sorted(merged.values(), key=lambda c: c["distance"])
 
     # ★检索重排（rerank，阶段3）★
     # 双塔向量召回是「粗排」（按余弦距离），交叉编码器 rerank 是「精排」——对 query 与每条
