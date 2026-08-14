@@ -18,6 +18,12 @@ __pycache__/
 .vscode/
 .idea/
 
+# 前端构建产物 / TS 增量编译缓存（不进仓库）
+frontend/*.tsbuildinfo
+frontend/**/*.tsbuildinfo
+frontend/dist/
+frontend/node_modules/
+
 # Logs and temporary files
 *.log
 logs/
@@ -31,3 +37,6 @@ data/chroma/
 
 # 运行时文档备份目录（迁移脚本产生，不进仓库）
 data/documents.bak_*/
+
+# 评测集与评测结果：含真实业务/内部文档信息，不进公开仓库（本地保留）。
+eval/
