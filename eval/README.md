@@ -34,13 +34,23 @@
 # 检索层评测（不调研判 LLM，出 Hit@k / MRR / 命中距离 / 拒答率）
 .venv/Scripts/python.exe -m scripts.eval_retrieval --top-k 5 --save eval/result_xxx.json
 
+# 只跑指定题并打印 topK 命中明细，适合诊断 hard case
+.venv/Scripts/python.exe -m scripts.eval_retrieval --ids 8,55 --top-k 5 --show-hits --show-content
+
+# 临时覆盖检索模式 / 邻近上下文 / rerank 策略，不必改 .env
+.venv/Scripts/python.exe -m scripts.eval_retrieval --top-k 5 --retrieval-mode vector --context-window 1 --save eval/result_context_window.json
+.venv/Scripts/python.exe -m scripts.eval_retrieval --top-k 5 --retrieval-mode rerank_fusion --rerank-strategy weighted --save eval/result_rerank_fusion_weighted.json
+
+# 单题入库形态诊断：打印 top hits、gold 文件关键词所在 chunk 与邻近 chunk
+.venv/Scripts/python.exe -m scripts.diagnose_retrieval_case --ids 8 --top-k 5
+
 # 研判层评测（真调 DeepSeek，~8s/题，出幻觉风险 / 拒答率）
 .venv/Scripts/python.exe -m scripts.eval_answer --save eval/result_xxx.json
 ```
 
 > 脚本默认读取 `eval/qa_set.json`。若只想跑脱敏示例，把 `qa_set.example.json` 复制为 `qa_set.json` 即可（示例的 `kb_id` 需对应你本地实际存在的知识库，否则检索为空）。
 
-结果文件（`result_*.json`）结构：`top_k` / `reject_threshold` / `metrics`（聚合指标）/ `distance_dist`（距离分布）/ `results`（逐题明细）。
+结果文件（`result_*.json`）结构：`top_k` / `reject_threshold` / `ids` / `metrics`（聚合指标）/ `distance_dist`（距离分布）/ `results`（逐题明细）。保存结果或开启 `--show-hits` 时，逐题明细会额外包含 top chunks、命中关键词和 `combined_hit`（topK 合并证据命中，用于诊断跨 chunk 证据，不替代主 Hit@K）。
 
 ---
 
@@ -51,7 +61,10 @@
 | 改动 | 关键指标 | 结论 |
 |------|---------|------|
 | **答案层研判防幻觉** | 幻觉风险 **91.7% → 8.3%**，正例召回保持 **94.7% 零误伤** | ✅ 采用（`JUDGE_ENABLED` 开关） |
-| **多查询改写** | MRR **0.776 → 0.807**、平均命中距离 0.224→0.214、Hit@5 **零误伤** | ✅ 正向，因慢默认关（`MULTI_QUERY_ENABLED`） |
-| **rerank 重排** | Hit@5 **94.7% → 89.5%**（口语/多意图正例被压出 top5） | ⚠️ 整体伤召回，默认关归档（`RERANK_ENABLED`） |
+| **邻近上下文扩展** | `RETRIEVAL_CONTEXT_WINDOW=1` 后 Hit@5 **94.7% → 100%**、MRR **0.776 → 0.845**，#8/#55 修复 | ✅ 质量优先时推荐评测后开启 |
+| **多查询改写** | MRR **0.776 → 0.807**、平均命中距离 0.224→0.214、Hit@5 **零误伤** | ✅ 正向，因慢默认关（`MULTI_QUERY_ENABLED` / `RETRIEVAL_MODE=multi_query`） |
+| **rerank 重排** | Hit@5 **94.7% → 89.5%**（口语/多意图正例被压出 top5） | ⚠️ 旧 pure rerank 伤召回，默认关归档（`RERANK_ENABLED`） |
+| **rerank 融合 weighted** | Hit@5 保持 **94.7%**、MRR **0.776 → 0.794** | 可选；不再伤 Hit@5，但未修 #8/#55 |
+| **BM25+jieba hybrid** | Hit@5 **92.1%**、MRR **0.732** | ⚠️ 单开伤召回，代码保留默认不开 |
 
-> 结论一句话：本库检索的正例召回已很高（94.7%），真短板是**幻觉**（主题相关但库里无答案时硬编），故防幻觉优先放在**答案层**（距离阈值无法区分能答/不能答，区间重叠）。
+> 结论一句话：本库检索的正例召回已很高（94.7%），真短板首先是**幻觉**（主题相关但库里无答案时硬编），故防幻觉优先放在**答案层**（距离阈值无法区分能答/不能答，区间重叠）；剩余 #8/#55 这类漏召回根因是**相邻 chunk / 跨 chunk 证据**，优先用邻近上下文扩展处理，而不是继续盲目叠 rerank/hybrid。

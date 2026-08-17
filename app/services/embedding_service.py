@@ -6,6 +6,7 @@ from urllib.error import URLError, HTTPError
 from app.schemas.embedding import Embedding
 from app.schemas.document_chunk import DocumentChunk
 from app.config import EMBEDDING_PROVIDER,ALIYUN_API_KEY, ALIYUN_EMBEDDING_MODEL, EMBEDDING_CONCURRENCY
+from app.services import model_usage_service as model_usage
 
 # 向量化 HTTP 请求的健壮性参数。
 # 阿里云 embedding 接口是远程 HTTP 服务，网络抖动 / keep-alive 连接被中途关闭时，
@@ -76,9 +77,34 @@ def create_aliyun_embedding_vector(text:str) -> list[float]:
         "input" : text,
     }
 
-    response_data = _post_json_with_retry(url, payload)
-
-    return response_data["data"][0]["embedding"]
+    start = time.perf_counter()
+    try:
+        response_data = _post_json_with_retry(url, payload)
+        usage = model_usage.extract_usage(response_data)
+        model_usage.record_call(
+            model_type=model_usage.MODEL_EMBEDDING,
+            provider="aliyun",
+            model_name=ALIYUN_EMBEDDING_MODEL,
+            operation="query_embedding",
+            success=True,
+            latency_ms=(time.perf_counter() - start) * 1000,
+            input_count=1,
+            **usage,
+        )
+        return response_data["data"][0]["embedding"]
+    except Exception as exc:
+        model_usage.record_call(
+            model_type=model_usage.MODEL_EMBEDDING,
+            provider="aliyun",
+            model_name=ALIYUN_EMBEDDING_MODEL,
+            operation="query_embedding",
+            success=False,
+            latency_ms=(time.perf_counter() - start) * 1000,
+            input_count=1,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
+        raise
 
 def create_aliyun_embedding_vectors(texts: list[str]) -> list[list[float]]:
     """一次请求向量化多条文本，返回与输入顺序对齐的向量列表。
@@ -95,10 +121,35 @@ def create_aliyun_embedding_vectors(texts: list[str]) -> list[list[float]]:
         "model": ALIYUN_EMBEDDING_MODEL,
         "input": texts,
     }
-    response_data = _post_json_with_retry(url, payload)
-
-    items = sorted(response_data["data"], key=lambda d: d["index"])
-    return [item["embedding"] for item in items]
+    start = time.perf_counter()
+    try:
+        response_data = _post_json_with_retry(url, payload)
+        usage = model_usage.extract_usage(response_data)
+        model_usage.record_call(
+            model_type=model_usage.MODEL_EMBEDDING,
+            provider="aliyun",
+            model_name=ALIYUN_EMBEDDING_MODEL,
+            operation="document_embedding" if len(texts) > 1 else "query_embedding",
+            success=True,
+            latency_ms=(time.perf_counter() - start) * 1000,
+            input_count=len(texts),
+            **usage,
+        )
+        items = sorted(response_data["data"], key=lambda d: d["index"])
+        return [item["embedding"] for item in items]
+    except Exception as exc:
+        model_usage.record_call(
+            model_type=model_usage.MODEL_EMBEDDING,
+            provider="aliyun",
+            model_name=ALIYUN_EMBEDDING_MODEL,
+            operation="document_embedding" if len(texts) > 1 else "query_embedding",
+            success=False,
+            latency_ms=(time.perf_counter() - start) * 1000,
+            input_count=len(texts),
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
+        raise
 
 def create_embedding(
     chunk_id:int,

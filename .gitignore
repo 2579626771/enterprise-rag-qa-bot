@@ -17,6 +17,7 @@ __pycache__/
 # Local editor/tooling files
 .vscode/
 .idea/
+.claude/
 
 # 前端构建产物 / TS 增量编译缓存（不进仓库）
 frontend/*.tsbuildinfo

@@ -4,6 +4,7 @@ import { useAuth } from '../composables/useAuth'
 import AppLayout from '../layouts/AppLayout.vue'
 import LoginView from '../views/LoginView.vue'
 import RegisterView from '../views/RegisterView.vue'
+import ForgotPasswordView from '../views/ForgotPasswordView.vue'
 import ChatView from '../views/ChatView.vue'
 import KbView from '../views/KbView.vue'
 import KbDocsView from '../views/KbDocsView.vue'
@@ -13,6 +14,10 @@ import AdminUsersView from '../views/AdminUsersView.vue'
 import AdminUserKbsView from '../views/AdminUserKbsView.vue'
 import AdminKbDocsView from '../views/AdminKbDocsView.vue'
 import AccountView from '../views/AccountView.vue'
+import ProfileView from '../views/ProfileView.vue'
+import FeedbackView from '../views/FeedbackView.vue'
+import AdminFeedbackView from '../views/AdminFeedbackView.vue'
+import AdminNotificationsView from '../views/AdminNotificationsView.vue'
 import ReviewView from '../views/ReviewView.vue'
 import ConfigPlaceholder from '../views/ConfigPlaceholder.vue'
 
@@ -20,6 +25,7 @@ import ConfigPlaceholder from '../views/ConfigPlaceholder.vue'
 const routes: RouteRecordRaw[] = [
   { path: '/login', name: 'login', component: LoginView, meta: { public: true } },
   { path: '/register', name: 'register', component: RegisterView, meta: { public: true } },
+  { path: '/forgot-password', name: 'forgot-password', component: ForgotPasswordView, meta: { public: true } },
   {
     path: '/',
     component: AppLayout,
@@ -30,12 +36,17 @@ const routes: RouteRecordRaw[] = [
       { path: 'kb/:kbId', name: 'kb-docs', component: KbDocsView, props: true, meta: { label: '我的知识库' } },
       { path: 'overview', name: 'overview', component: OverviewView, meta: { label: '运行概览' } },
       { path: 'guide', name: 'guide', component: GuideView, meta: { label: '使用指南' } },
+      { path: 'profile', name: 'profile', component: ProfileView, meta: { label: '个人中心' } },
+      { path: 'feedback', name: 'feedback', component: FeedbackView, meta: { label: '问题反馈' } },
       { path: 'config', name: 'config', component: ConfigPlaceholder, meta: { label: '检索配置' } },
       { path: 'adminkb', name: 'adminkb', component: AdminUsersView, meta: { label: '知识库管理', adminOnly: true } },
       { path: 'adminkb/users/:userId', name: 'admin-user-kbs', component: AdminUserKbsView, props: true, meta: { label: '知识库管理', adminOnly: true } },
       { path: 'adminkb/users/:userId/kbs/:kbId', name: 'admin-kb-docs', component: AdminKbDocsView, props: true, meta: { label: '知识库管理', adminOnly: true } },
       { path: 'account', name: 'account', component: AccountView, meta: { label: '账户管理', adminOnly: true } },
       { path: 'review', name: 'review', component: ReviewView, meta: { label: '申请审批', adminOnly: true } },
+      { path: 'feedback-admin', name: 'feedback-admin', component: AdminFeedbackView, meta: { label: '反馈处理', adminOnly: true } },
+      { path: 'notifications-admin', name: 'notifications-admin', component: AdminNotificationsView, meta: { label: '通知下发', adminOnly: true } },
+      { path: 'model-usage', name: 'model-usage', component: () => import('../views/AdminModelUsageView.vue'), meta: { label: '模型监控', adminOnly: true } },
     ],
   },
   // 兜底：未知路径回到问答页
@@ -58,13 +69,19 @@ router.beforeEach((to) => {
   }
 
   // 已登录却访问登录/注册页：回到首页。
-  if (to.name === 'login' || to.name === 'register') {
+  if (to.name === 'login' || to.name === 'register' || to.name === 'forgot-password') {
     return { name: 'chat' }
   }
 
   // 管理员专属页：非管理员回到问答页。
   if (to.meta.adminOnly && !isAdmin.value) {
     return { name: 'chat' }
+  }
+
+  // 管理员重置过临时密码后，先引导用户进入个人中心修改密码。
+  const { user } = useAuth()
+  if (user.value?.force_password_change && to.name !== 'profile') {
+    return { name: 'profile' }
   }
 
   return true

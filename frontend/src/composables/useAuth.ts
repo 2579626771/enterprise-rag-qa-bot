@@ -1,5 +1,5 @@
 import { ref, computed } from 'vue'
-import { login as apiLogin, register as apiRegister, type AuthUser } from '../api/client'
+import { login as apiLogin, register as apiRegister, type AuthUser, type RecoveryItem } from '../api/client'
 
 // 登录态持久化：token + user 存 localStorage（key 与 client.ts 的 TOKEN_KEY 一致）。
 // 刷新页面后仍保持登录，直到 token 过期或主动退出。
@@ -68,11 +68,21 @@ export function useAuth() {
     persist()
   }
 
-  async function register(username: string, password: string, displayName = ''): Promise<void> {
-    const res = await apiRegister(username, password, displayName)
+  async function register(
+    username: string,
+    password: string,
+    displayName = '',
+    recoveryItems: RecoveryItem[] = [],
+  ): Promise<void> {
+    const res = await apiRegister(username, password, displayName, recoveryItems)
     // 注册成功即自动登录：写入令牌与用户信息
     token.value = res.access_token
     user.value = res.user
+    persist()
+  }
+
+  function setUser(nextUser: AuthUser): void {
+    user.value = nextUser
     persist()
   }
 
@@ -80,5 +90,5 @@ export function useAuth() {
     clear()
   }
 
-  return { token, user, isLoggedIn, isAdmin, login, register, logout }
+  return { token, user, isLoggedIn, isAdmin, login, register, setUser, logout }
 }

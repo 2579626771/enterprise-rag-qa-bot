@@ -180,6 +180,29 @@ export async function reloadKnowledgeBase(kbId: number): Promise<{ reloaded: boo
   return data
 }
 
+export interface RechunkDocxResult {
+  filename: string
+  status: 'success' | 'failed'
+  chunk_count: number
+  error: string
+}
+
+export interface RechunkDocxResponse {
+  processed: number
+  succeeded: number
+  failed: number
+  skipped: number
+  files: RechunkDocxResult[]
+}
+
+/** 统一存量 DOCX 切分：按当前解析/段落切分策略重建该库下所有 Word 文档 */
+export async function rechunkDocxDocuments(kbId: number): Promise<RechunkDocxResponse> {
+  const { data } = await http.post<RechunkDocxResponse>('/maintenance/rechunk-docx', null, {
+    params: { kb_id: kbId },
+  })
+  return data
+}
+
 /** 从 axios 错误里提取后端返回的 detail 文案，便于界面展示 */
 export function extractErrorMessage(err: unknown): string {
   if (axios.isAxiosError(err)) {
@@ -251,6 +274,16 @@ export interface AuthUser {
   display_name: string
   kb_quota?: number
   created_at?: string
+  last_login_at?: string
+  password_changed_at?: string
+  force_password_change?: boolean
+  locked_until?: string
+  has_recovery_questions?: boolean
+}
+
+export interface RecoveryItem {
+  question: string
+  answer: string
 }
 
 export interface LoginResponse {
@@ -270,11 +303,13 @@ export async function register(
   username: string,
   password: string,
   displayName = '',
+  recoveryItems: RecoveryItem[] = [],
 ): Promise<LoginResponse> {
   const { data } = await http.post<LoginResponse>('/auth/register', {
     username,
     password,
     display_name: displayName,
+    recovery_items: recoveryItems,
   })
   return data
 }
@@ -283,6 +318,49 @@ export async function register(
 export async function fetchMe(): Promise<AuthUser> {
   const { data } = await http.get<AuthUser>('/auth/me')
   return data
+}
+
+/** 修改当前用户显示名 */
+export async function updateMyProfile(displayName: string): Promise<AuthUser> {
+  const { data } = await http.patch<AuthUser>('/auth/me', { display_name: displayName })
+  return data
+}
+
+/** 当前用户修改自己的密码 */
+export async function changeMyPassword(oldPassword: string, newPassword: string): Promise<AuthUser> {
+  const { data } = await http.post<AuthUser>('/auth/password/change', {
+    old_password: oldPassword,
+    new_password: newPassword,
+  })
+  return data
+}
+
+/** 设置/更新当前用户的找回密码问题 */
+export async function setRecoveryQuestions(recoveryItems: RecoveryItem[]): Promise<AuthUser> {
+  const { data } = await http.put<AuthUser>('/auth/recovery/questions', {
+    recovery_items: recoveryItems,
+  })
+  return data
+}
+
+/** 忘记密码：按用户名读取找回问题 */
+export async function fetchRecoveryQuestions(username: string): Promise<string[]> {
+  const { data } = await http.post<{ questions: string[] }>('/auth/recovery/questions', { username })
+  return data.questions
+}
+
+/** 忘记密码：回答问题后自助重置密码 */
+export async function resetPasswordByRecovery(
+  username: string,
+  answers: string[],
+  newPassword: string,
+): Promise<AuthUser> {
+  const { data } = await http.post<{ reset: boolean; user: AuthUser }>('/auth/recovery/reset-password', {
+    username,
+    answers,
+    new_password: newPassword,
+  })
+  return data.user
 }
 
 /** 用户列表（仅管理员） */
@@ -305,6 +383,19 @@ export async function createUser(payload: {
 /** 删除用户（仅管理员） */
 export async function deleteUser(userId: number): Promise<void> {
   await http.delete(`/users/${userId}`)
+}
+
+/** 管理员重置其他用户密码 */
+export async function resetUserPassword(
+  userId: number,
+  newPassword: string,
+  forceChange = true,
+): Promise<AuthUser> {
+  const { data } = await http.post<AuthUser>(`/users/${userId}/password-reset`, {
+    new_password: newPassword,
+    force_change: forceChange,
+  })
+  return data
 }
 
 /** 调整某用户的知识库配额（仅管理员）。返回新配额与当前已用数。 */
@@ -427,6 +518,277 @@ export interface QuotaRequest {
   reviewed_by: number | null
   created_at?: string
   reviewed_at?: string
+}
+
+// ---- 通知与消息中心 ----
+
+export type NotificationStatus = 'unread' | 'read' | 'closed'
+export type NotificationTargetType = 'all' | 'users'
+
+export interface UserNotification {
+  id: number
+  title: string
+  content: string
+  created_by: number
+  target_type: NotificationTargetType
+  status: NotificationStatus
+  created_at?: string
+  read_at?: string
+  closed_at?: string
+}
+
+export interface AdminNotificationSummary {
+  id: number
+  title: string
+  content: string
+  created_by: number
+  target_type: NotificationTargetType
+  created_at?: string
+  recipient_count: number
+  unread_count: number
+  read_count: number
+  closed_count: number
+}
+
+/** 我的通知列表 */
+export async function listMyNotifications(includeClosed = false): Promise<UserNotification[]> {
+  const { data } = await http.get<{ notifications: UserNotification[] }>('/notifications/mine', {
+    params: { include_closed: includeClosed },
+  })
+  return data.notifications
+}
+
+/** 当前用户未读通知数量 */
+export async function getUnreadNotificationCount(): Promise<number> {
+  const { data } = await http.get<{ count: number }>('/notifications/unread-count')
+  return data.count
+}
+
+/** 标记通知已读 */
+export async function markNotificationRead(id: number): Promise<UserNotification> {
+  const { data } = await http.post<UserNotification>(`/notifications/${id}/read`)
+  return data
+}
+
+/** 关闭通知 */
+export async function closeNotification(id: number): Promise<UserNotification> {
+  const { data } = await http.post<UserNotification>(`/notifications/${id}/close`)
+  return data
+}
+
+/** 管理员下发通知 */
+export async function sendAdminNotification(payload: {
+  title: string
+  content?: string
+  send_to_all: boolean
+  user_ids?: number[]
+}): Promise<AdminNotificationSummary> {
+  const { data } = await http.post<AdminNotificationSummary>('/notifications/admin', payload)
+  return data
+}
+
+/** 管理员通知下发历史 */
+export async function listAdminNotifications(): Promise<AdminNotificationSummary[]> {
+  const { data } = await http.get<{ notifications: AdminNotificationSummary[] }>('/notifications/admin')
+  return data.notifications
+}
+
+// ---- 模型用量监控（仅管理员）----
+
+export type ModelType = 'embedding' | 'chat' | 'judge' | 'query_rewrite' | 'rerank'
+
+export interface ModelUsageMetric {
+  call_count: number
+  success_count: number
+  failed_count: number
+  success_rate: number
+  error_rate: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  avg_latency_ms: number
+  max_latency_ms: number
+  p95_latency_ms: number
+}
+
+export interface ModelUsageByModel extends ModelUsageMetric {
+  model_type: ModelType | string
+}
+
+export interface ModelUsageByUser extends ModelUsageMetric {
+  user_id: number | null
+  username?: string
+  display_name?: string
+}
+
+export interface ModelUsageDaily extends ModelUsageMetric {
+  date: string
+}
+
+export interface ModelUsageAlert {
+  type: string
+  severity: 'warning' | 'error' | string
+  model_type: ModelType | string | null
+  user_id: number | null
+  username?: string
+  display_name?: string
+  title: string
+  message: string
+  current_value: number
+  threshold: number
+}
+
+export interface ModelUsageSummary {
+  days: number
+  overall: ModelUsageMetric
+  by_model_type: ModelUsageByModel[]
+  by_user: ModelUsageByUser[]
+  daily_trend: ModelUsageDaily[]
+  alerts: ModelUsageAlert[]
+}
+
+export interface ModelUsageRecord {
+  id: number
+  user_id: number | null
+  username?: string
+  display_name?: string
+  kb_id: number | null
+  request_id: string
+  model_type: ModelType | string
+  provider: string
+  model_name: string
+  operation: string
+  success: boolean
+  latency_ms: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  input_count: number
+  error_type: string
+  error_message: string
+  created_at?: string
+}
+
+export interface ModelUsageFilters {
+  days?: number
+  user_id?: number | null
+  model_type?: ModelType | 'all' | string | null
+  success?: boolean | null
+  limit?: number
+}
+
+function usageParams(filters: ModelUsageFilters = {}) {
+  return {
+    days: filters.days ?? 7,
+    user_id: filters.user_id || undefined,
+    model_type: filters.model_type && filters.model_type !== 'all' ? filters.model_type : undefined,
+    success: filters.success ?? undefined,
+    limit: filters.limit,
+  }
+}
+
+/** 管理员模型用量聚合统计 */
+export async function fetchModelUsageSummary(filters: ModelUsageFilters = {}): Promise<ModelUsageSummary> {
+  const { data } = await http.get<ModelUsageSummary>('/admin/model-usage/summary', { params: usageParams(filters) })
+  return data
+}
+
+/** 管理员模型调用明细 */
+export async function fetchModelUsageRecords(filters: ModelUsageFilters = {}): Promise<ModelUsageRecord[]> {
+  const { data } = await http.get<{ records: ModelUsageRecord[] }>('/admin/model-usage/records', { params: usageParams(filters) })
+  return data.records
+}
+
+/** 管理员模型异常告警 */
+export async function fetchModelUsageAlerts(days = 1): Promise<ModelUsageAlert[]> {
+  const { data } = await http.get<{ alerts: ModelUsageAlert[] }>('/admin/model-usage/alerts', { params: { days } })
+  return data.alerts
+}
+
+// ---- 问题反馈 ----
+
+export type FeedbackStatus = 'pending' | 'processing' | 'resolved' | 'closed'
+
+export interface FeedbackAttachment {
+  id: number
+  ticket_id: number
+  filename: string
+  content_type: string
+  size: number
+  created_at?: string
+}
+
+export interface FeedbackTicket {
+  id: number
+  user_id: number
+  title: string
+  content: string
+  status: FeedbackStatus
+  admin_reply: string
+  resolved_by: number | null
+  created_at?: string
+  updated_at?: string
+  resolved_at?: string
+  attachments: FeedbackAttachment[]
+}
+
+/** 提交问题反馈 */
+export async function createFeedback(title: string, content = ''): Promise<FeedbackTicket> {
+  const { data } = await http.post<FeedbackTicket>('/feedback', { title, content })
+  return data
+}
+
+/** 给反馈上传截图附件 */
+export async function uploadFeedbackScreenshots(
+  ticketId: number,
+  files: File[],
+): Promise<FeedbackAttachment[]> {
+  const form = new FormData()
+  files.forEach((file) => form.append('files', file))
+  const { data } = await http.post<{ attachments: FeedbackAttachment[] }>(
+    `/feedback/${ticketId}/attachments`,
+    form,
+    { headers: { 'Content-Type': 'multipart/form-data' } },
+  )
+  return data.attachments
+}
+
+/** 鉴权下载反馈截图，返回可用于 window.open 的 blob URL。调用方负责 URL.revokeObjectURL。 */
+export async function openFeedbackAttachment(ticketId: number, attachmentId: number): Promise<string> {
+  const { data } = await http.get<Blob>(`/feedback/${ticketId}/attachments/${attachmentId}`, {
+    responseType: 'blob',
+  })
+  return URL.createObjectURL(data)
+}
+
+/** 我的反馈历史 */
+export async function listMyFeedback(): Promise<FeedbackTicket[]> {
+  const { data } = await http.get<{ tickets: FeedbackTicket[] }>('/feedback/mine')
+  return data.tickets
+}
+
+/** 用户确认关闭自己的反馈 */
+export async function closeFeedback(id: number): Promise<FeedbackTicket> {
+  const { data } = await http.post<FeedbackTicket>(`/feedback/${id}/close`)
+  return data
+}
+
+/** 管理员查看反馈列表，可按状态筛选 */
+export async function listAdminFeedback(status: FeedbackStatus | 'all' = 'all'): Promise<FeedbackTicket[]> {
+  const { data } = await http.get<{ tickets: FeedbackTicket[] }>('/feedback/admin', {
+    params: { status },
+  })
+  return data.tickets
+}
+
+/** 管理员更新反馈状态与回复 */
+export async function updateAdminFeedback(
+  id: number,
+  status: Exclude<FeedbackStatus, 'pending'>,
+  reply: string,
+): Promise<FeedbackTicket> {
+  const { data } = await http.patch<FeedbackTicket>(`/feedback/admin/${id}`, { status, reply })
+  return data
 }
 
 /** 提交额外知识库配额申请 */

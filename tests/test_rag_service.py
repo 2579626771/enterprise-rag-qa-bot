@@ -17,6 +17,13 @@ class TestRagService(unittest.TestCase):
         self.original_answer_provider = answer_service.ANSWER_PROVIDER
         self.original_judge_provider = judge_service.ANSWER_PROVIDER
         self.original_judge_enabled = rag_service.JUDGE_ENABLED
+        import app.config as config
+        self._orig_retrieval_mode = config.RETRIEVAL_MODE
+        self._orig_context_window = config.RETRIEVAL_CONTEXT_WINDOW
+        self._orig_rerank_enabled = config.RERANK_ENABLED
+        self._orig_rerank_strategy = config.RERANK_STRATEGY
+        self._orig_rerank_weight = config.RERANK_WEIGHT
+        self._orig_rerank_window_multiplier = config.RERANK_WINDOW_MULTIPLIER
         embedding_service.EMBEDDING_PROVIDER = "fake"
         answer_service.ANSWER_PROVIDER = "fake"
         judge_service.ANSWER_PROVIDER = "fake"
@@ -42,6 +49,13 @@ class TestRagService(unittest.TestCase):
         answer_service.ANSWER_PROVIDER = self.original_answer_provider
         judge_service.ANSWER_PROVIDER = self.original_judge_provider
         rag_service.JUDGE_ENABLED = self.original_judge_enabled
+        import app.config as config
+        config.RETRIEVAL_MODE = self._orig_retrieval_mode
+        config.RETRIEVAL_CONTEXT_WINDOW = self._orig_context_window
+        config.RERANK_ENABLED = self._orig_rerank_enabled
+        config.RERANK_STRATEGY = self._orig_rerank_strategy
+        config.RERANK_WEIGHT = self._orig_rerank_weight
+        config.RERANK_WINDOW_MULTIPLIER = self._orig_rerank_window_multiplier
         knowledge_base_service._reset_collection_for_test()
         logging.disable(logging.NOTSET)
 
@@ -83,7 +97,7 @@ class TestRagService(unittest.TestCase):
             document_id=0,
             filename="only_in_kb1.txt",
             file_type="txt",
-            content="这是只属于知识库一的机密内容：项目代号猎户座。",
+            content="这是只属于知识库一的隔离测试内容：项目编号 alpha。",
         )
         knowledge_base_service.ingest_document(document, kb_id=1)
 
@@ -234,6 +248,77 @@ class TestRagService(unittest.TestCase):
             self.assertEqual(result["sources"][0]["filename"], "rag_demo.txt")
         finally:
             config.MULTI_QUERY_ENABLED = orig_enabled
+
+    def test_retrieval_mode_vector_ignores_rerank_switch(self):
+        # RETRIEVAL_MODE=vector 是最稳降级：即便旧 RERANK_ENABLED=True，也不应走 rerank。
+        import app.config as config
+        import app.services.rerank_service as rerank_service
+
+        config.RETRIEVAL_MODE = "vector"
+        config.RERANK_ENABLED = True
+        orig_rerank = rerank_service.rerank
+
+        def _boom(*args, **kwargs):
+            raise AssertionError("vector mode should not call rerank")
+
+        rerank_service.rerank = _boom
+        try:
+            self._ingest_demo(kb_id=1)
+            result = answer_from_knowledge_base(
+                question="怎么读取文档内容？", top_k=2, max_distance=1.0, kb_id=1
+            )
+            self.assertTrue(len(result["sources"]) >= 1)
+        finally:
+            rerank_service.rerank = orig_rerank
+
+    def test_context_window_expands_neighbor_chunks(self):
+        # #8 类问题：命中的 chunk 与答案短句相邻。开启窗口后 source content 应带入邻居。
+        import app.config as config
+
+        config.RETRIEVAL_CONTEXT_WINDOW = 1
+        document = create_document(
+            document_id=0,
+            filename="window.txt",
+            file_type="txt",
+            content="功能频率限制 查询压力 固定语句。\n\n只支持五分钟一次。",
+        )
+        knowledge_base_service.ingest_document(document, kb_id=1)
+        hits = knowledge_base_service.search("功能查询频率", top_k=1, kb_id=1)
+        self.assertEqual(len(hits), 1)
+        self.assertIn("五分钟", hits[0]["content"])
+        self.assertIn("expanded_chunk_indexes", hits[0])
+
+    def test_rerank_weighted_keeps_distance_and_candidates(self):
+        import app.config as config
+        import app.services.rerank_service as rerank_service
+
+        config.RETRIEVAL_MODE = "rerank_fusion"
+        config.RERANK_STRATEGY = "weighted"
+        config.RERANK_WEIGHT = 0.5
+        rerank_service.RERANK_PROVIDER = "fake"
+        self._ingest_demo(kb_id=1)
+        hits = knowledge_base_service.search("怎么上传文档？", top_k=2, kb_id=1)
+        self.assertTrue(len(hits) >= 1)
+        self.assertTrue(all("distance" in h for h in hits))
+        keys = [(h["filename"], h.get("chunk_index")) for h in hits]
+        self.assertEqual(len(keys), len(set(keys)))
+
+    def test_hybrid_mode_can_return_keyword_candidate(self):
+        # fake embedding 对语义不敏感；hybrid 的 BM25 应能把关键词片段合并进候选。
+        import app.config as config
+
+        config.RETRIEVAL_MODE = "hybrid"
+        document = create_document(
+            document_id=0,
+            filename="hybrid.txt",
+            file_type="txt",
+            content="普通说明文字。\n\n示例系统支持 webhook csv api 对接。",
+        )
+        knowledge_base_service.ingest_document(document, kb_id=1)
+        hits = knowledge_base_service.search("webhook csv api", top_k=2, kb_id=1)
+        self.assertTrue(any("webhook" in h["content"] for h in hits))
+        keys = [(h["filename"], h.get("chunk_index")) for h in hits]
+        self.assertEqual(len(keys), len(set(keys)))
 
 
 if __name__ == "__main__":

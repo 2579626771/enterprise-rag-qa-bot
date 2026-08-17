@@ -83,6 +83,29 @@
           </div>
         </div>
         <div v-if="asking" class="bubble assistant loading"><span></span><span></span><span></span></div>
+        <div v-if="typingAssistant" class="bubble assistant typing-bubble">
+          <div
+            v-if="typingAssistant.verdict && typingAssistant.verdict.answerable === false"
+            class="verdict-badge refuse"
+          >
+            <i class="fa-solid fa-triangle-exclamation"></i>
+            <span>资料不足，未作答<template v-if="typingAssistant.verdict.reason"> · {{ typingAssistant.verdict.reason }}</template></span>
+          </div>
+          <div
+            v-else-if="typingAssistant.verdict && typingAssistant.verdict.confidence === 'low'"
+            class="verdict-badge low"
+          >
+            <i class="fa-solid fa-circle-info"></i>
+            <span>资料有限，回答仅供参考</span>
+          </div>
+          <p>{{ typingAssistant.content }}<span v-if="typing" class="typing-cursor"></span></p>
+          <div v-if="!typing && typingAssistant.sources?.length" class="sources">
+            <details v-for="(s, i) in typingAssistant.sources" :key="i" class="source-chip">
+              <summary>📄 {{ s.filename }} · 第 {{ s.chunk_index }} 段</summary>
+              <div class="src-body">{{ s.content }}</div>
+            </details>
+          </div>
+        </div>
       </div>
 
       <div v-else class="hero-card">
@@ -149,7 +172,7 @@
         @keydown.enter="send"
       />
       <button class="plain-icon" type="button" aria-label="附件"><i class="fa-solid fa-paperclip"></i></button>
-      <button class="send" type="button" aria-label="发送" :disabled="asking" @click="send">
+      <button class="send" type="button" aria-label="发送" :disabled="asking || typing" @click="send">
         <i class="fa-solid fa-paper-plane"></i>
       </button>
     </div>
@@ -159,7 +182,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { askQuestion, extractErrorMessage } from '../api/client'
+import { askQuestion, extractErrorMessage, type Source, type Verdict } from '../api/client'
 import { useSessions } from '../composables/useSessions'
 import { useKnowledgeBase } from '../composables/useKnowledgeBase'
 
@@ -192,6 +215,8 @@ const { ALL_KB_ID, kbList, currentKbId, currentKb, selectKb } = useKnowledgeBase
 const filter = ref<'all' | 'favorite'>('all')
 const draft = ref('')
 const asking = ref(false)
+const typing = ref(false)
+const typingAssistant = ref<{ content: string; sources: Source[]; verdict: Verdict | null } | null>(null)
 const kbPicker = ref<HTMLDetailsElement | null>(null)
 
 // 当前检索范围的显示名：全部 → 「全部知识库」；否则为库名。
@@ -219,9 +244,37 @@ async function onRename(sessionId: number) {
   if (next) await renameSession(sessionId, next)
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
+async function typeAnswer(fullText: string, sources: Source[], verdict: Verdict | null) {
+  typingAssistant.value = { content: '', sources, verdict }
+  typing.value = true
+  let index = 0
+  while (index < fullText.length) {
+    const remaining = fullText.length - index
+    const step = fullText.length > 600 ? 8 : fullText.length > 240 ? 5 : 3
+    index += Math.min(step, remaining)
+    typingAssistant.value.content = fullText.slice(0, index)
+    await sleep(fullText.length > 600 ? 10 : 18)
+  }
+  typing.value = false
+}
+
+async function persistTypedAssistant(
+  sid: number,
+  content: string,
+  sources: Source[] = [],
+  verdict: Verdict | null = null,
+) {
+  await appendMessage(sid, { role: 'assistant', content, sources, verdict })
+  typingAssistant.value = null
+}
+
 async function send() {
   const question = draft.value.trim()
-  if (!question || asking.value) return
+  if (!question || asking.value || typing.value) return
 
   const sid = await ensureCurrent()
   await appendMessage(sid, { role: 'user', content: question })
@@ -235,11 +288,17 @@ async function send() {
       res.answerable === undefined
         ? null
         : { answerable: res.answerable, reason: res.reason ?? '', confidence: res.confidence ?? 'high' }
-    await appendMessage(sid, { role: 'assistant', content: res.answer, sources: res.sources, verdict })
+    asking.value = false
+    await typeAnswer(res.answer, res.sources, verdict)
+    await persistTypedAssistant(sid, res.answer, res.sources, verdict)
   } catch (e) {
-    await appendMessage(sid, { role: 'assistant', content: `出错了：${extractErrorMessage(e)}` })
+    const errorText = `出错了：${extractErrorMessage(e)}`
+    asking.value = false
+    await typeAnswer(errorText, [], null)
+    await persistTypedAssistant(sid, errorText)
   } finally {
     asking.value = false
+    typing.value = false
   }
 }
 </script>

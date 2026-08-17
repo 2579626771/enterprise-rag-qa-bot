@@ -1,6 +1,8 @@
 import json
+import time
 from urllib import request
 from app.config import ANSWER_PROVIDER,DEEPSEEK_API_KEY, DEEPSEEK_CHAT_MODEL
+from app.services import model_usage_service as model_usage
 
 # 作答提示词的默认「指令前言」（不含资料/问题本体，由代码拼接）。
 # 抽成模块常量后，检索配置页可在线覆盖它（存 retrieval_configs.answer_prompt）；
@@ -59,10 +61,35 @@ def generate_deepseek_answer(
         method="POST",
     )
 
-    with request.urlopen(req,timeout=60) as response:
-        response_data = json.loads(response.read().decode("utf-8"))
-
-    return response_data["choices"][0]["message"]["content"]
+    start = time.perf_counter()
+    try:
+        with request.urlopen(req,timeout=60) as response:
+            response_data = json.loads(response.read().decode("utf-8"))
+        usage = model_usage.extract_usage(response_data)
+        model_usage.record_call(
+            model_type=model_usage.MODEL_CHAT,
+            provider="deepseek",
+            model_name=DEEPSEEK_CHAT_MODEL,
+            operation="answer",
+            success=True,
+            latency_ms=(time.perf_counter() - start) * 1000,
+            input_count=1,
+            **usage,
+        )
+        return response_data["choices"][0]["message"]["content"]
+    except Exception as exc:
+        model_usage.record_call(
+            model_type=model_usage.MODEL_CHAT,
+            provider="deepseek",
+            model_name=DEEPSEEK_CHAT_MODEL,
+            operation="answer",
+            success=False,
+            latency_ms=(time.perf_counter() - start) * 1000,
+            input_count=1,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
+        raise
 
 def generate_answer(
     question:str,

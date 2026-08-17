@@ -63,6 +63,11 @@ CHROMA_COLLECTION = _env.get("CHROMA_COLLECTION", "knowledge_base")
 RAG_TOP_K = int(_env.get("RAG_TOP_K", "5"))
 DOCUMENTS_DIR = _env.get("DOCUMENTS_DIR", str(BASE_DIR / "data" / "documents"))
 
+# 问题反馈截图附件：本地磁盘存储目录、单反馈最大张数、单张最大 MB。
+FEEDBACK_ATTACHMENT_DIR = _env.get("FEEDBACK_ATTACHMENT_DIR", str(BASE_DIR / "data" / "feedback_attachments"))
+FEEDBACK_ATTACHMENT_MAX_COUNT = int(_env.get("FEEDBACK_ATTACHMENT_MAX_COUNT", "5"))
+FEEDBACK_ATTACHMENT_MAX_MB = int(_env.get("FEEDBACK_ATTACHMENT_MAX_MB", "5"))
+
 # RAG_MAX_DISTANCE：相似度距离阈值（余弦距离，0=完全一样，1=毫不相关）。
 # 检索回来的片段，距离若大于这个值，就当作“不相关”丢弃。
 # 作用：问一个文档里根本没有的问题时，不会硬凑无关来源、也不会让大模型乱编。
@@ -98,6 +103,31 @@ MULTI_QUERY_ENABLED = _env.get("MULTI_QUERY_ENABLED", "false").strip().lower() i
 MULTI_QUERY_COUNT = int(_env.get("MULTI_QUERY_COUNT", "3"))
 QUERY_REWRITE_PROVIDER = _env.get("QUERY_REWRITE_PROVIDER", "deepseek")
 
+# ===== 检索模式与融合策略（检索质量专线阶段6）=====
+# RETRIEVAL_MODE：显式选择检索链路，便于评测/生产快速降级。
+# - auto：兼容旧行为，继续由 MULTI_QUERY_ENABLED / RERANK_ENABLED 控制。
+# - vector：强制只走向量召回（最稳降级）。
+# - multi_query：原查询 + 多查询改写，多路召回合并。
+# - rerank：向量召回后按 rerank 纯排序（旧策略）。
+# - rerank_fusion：向量召回后用窗口/加权策略融合 rerank，避免纯 rerank 伤召回。
+# - hybrid：向量 + BM25(jieba) 混合召回，RRF 融合。
+# - hybrid_rerank_fusion：混合召回后再做 rerank 融合。
+RETRIEVAL_MODE = _env.get("RETRIEVAL_MODE", "auto").strip().lower()
+
+# 邻近上下文扩展：解决“答案短句被切到相邻 chunk”的情况（如 #8）。默认 0 关闭。
+# 开启后只扩展最终命中的 source content，不改变原命中 chunk 的 distance/阈值语义。
+RETRIEVAL_CONTEXT_WINDOW = int(_env.get("RETRIEVAL_CONTEXT_WINDOW", "0"))
+RETRIEVAL_CONTEXT_MAX_CHARS = int(_env.get("RETRIEVAL_CONTEXT_MAX_CHARS", "1200"))
+
+# rerank 融合策略：sort=旧纯排序；window=仅对前 top_k*N 做 rerank；weighted=距离+rerank分加权。
+RERANK_STRATEGY = _env.get("RERANK_STRATEGY", "sort").strip().lower()
+RERANK_WINDOW_MULTIPLIER = int(_env.get("RERANK_WINDOW_MULTIPLIER", "2"))
+RERANK_WEIGHT = float(_env.get("RERANK_WEIGHT", "0.6"))
+
+# 混合检索：向量召回 + BM25(jieba) 关键词召回，RRF 融合。只在 hybrid 类 mode 下启用。
+HYBRID_BM25_TOP_K_MULTIPLIER = int(_env.get("HYBRID_BM25_TOP_K_MULTIPLIER", "4"))
+HYBRID_RRF_K = int(_env.get("HYBRID_RRF_K", "60"))
+
 # ===== MySQL（文档元数据持久化）=====
 # 存放文档的分类/描述/上传时间/状态等元数据，替换早期前端 localStorage 占位。
 # MYSQL_ENABLED：是否启用 MySQL。为空或数据库不可用时，后端自动降级为“内存元数据”，
@@ -110,6 +140,15 @@ MYSQL_DATABASE = _env.get("MYSQL_DATABASE", "enterprise_rag")
 # 默认：只要填了用户名就启用；可用 MYSQL_ENABLED=false 显式关闭。
 MYSQL_ENABLED = _env.get("MYSQL_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 
+# ===== 模型用量监控告警阈值 =====
+# 管理员侧“模型监控”实时计算告警；监控写入失败不会影响问答/入库主流程。
+MODEL_USAGE_ALERT_MIN_CALLS = int(_env.get("MODEL_USAGE_ALERT_MIN_CALLS", "5"))
+MODEL_USAGE_ALERT_ERROR_RATE = float(_env.get("MODEL_USAGE_ALERT_ERROR_RATE", "0.2"))
+MODEL_USAGE_ALERT_LATENCY_EMBEDDING_MS = int(_env.get("MODEL_USAGE_ALERT_LATENCY_EMBEDDING_MS", "10000"))
+MODEL_USAGE_ALERT_LATENCY_CHAT_MS = int(_env.get("MODEL_USAGE_ALERT_LATENCY_CHAT_MS", "20000"))
+MODEL_USAGE_ALERT_LATENCY_RERANK_MS = int(_env.get("MODEL_USAGE_ALERT_LATENCY_RERANK_MS", "8000"))
+MODEL_USAGE_ALERT_TOKEN_DAILY = int(_env.get("MODEL_USAGE_ALERT_TOKEN_DAILY", "100000"))
+
 # ===== 认证（JWT）=====
 # JWT_SECRET：签发/校验登录令牌的密钥。生产环境务必改成足够随机的长字符串，
 #   一旦泄露，攻击者可伪造任意用户的登录令牌。默认值仅供本地开发。
@@ -120,6 +159,9 @@ JWT_EXPIRE_MINUTES = int(_env.get("JWT_EXPIRE_MINUTES", "720"))
 JWT_ALGORITHM = "HS256"
 DEFAULT_ADMIN_USERNAME = _env.get("DEFAULT_ADMIN_USERNAME", "admin")
 DEFAULT_ADMIN_PASSWORD = _env.get("DEFAULT_ADMIN_PASSWORD", "admin123")
+# 登录失败保护：连续输错达到阈值后短时锁定账号，管理员重置密码会清除锁定。
+LOGIN_MAX_FAILED_ATTEMPTS = int(_env.get("LOGIN_MAX_FAILED_ATTEMPTS", "5"))
+LOGIN_LOCK_MINUTES = int(_env.get("LOGIN_LOCK_MINUTES", "15"))
 
 # ===== 多知识库（多租户隔离）=====
 # DEFAULT_KB_QUOTA：普通用户初始可拥有的知识库上限（超出需向管理员申请）。

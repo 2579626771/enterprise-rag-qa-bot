@@ -101,7 +101,7 @@ class TestKbIsolation(unittest.TestCase):
         bob_h = self._hdr("bob", "bob123")
 
         # Alice 上传到自己的库
-        r = self._upload(alice_h, self.alice_kb, "secret.txt", "Alice的机密：项目代号猎户座启动。")
+        r = self._upload(alice_h, self.alice_kb, "secret.txt", "Alice 的隔离测试内容：项目编号 alpha 启动。")
         self.assertEqual(r.status_code, 200)
 
         # Alice 能在自己库看到
@@ -120,7 +120,7 @@ class TestKbIsolation(unittest.TestCase):
         alice_h = self._hdr("alice", "alice123")
         bob_h = self._hdr("bob", "bob123")
 
-        self._upload(alice_h, self.alice_kb, "secret.txt", "项目代号是猎户座，预算一千万。")
+        self._upload(alice_h, self.alice_kb, "secret.txt", "项目编号是 alpha，预算为测试值。")
 
         # Alice 在自己库能问到
         a = self.client.post("/rag/ask", json={"question": "项目代号是什么？", "kb_id": self.alice_kb}, headers=alice_h)
@@ -222,7 +222,7 @@ class TestKbIsolation(unittest.TestCase):
         self._upload(alice_h, self.alice_kb, "a1.txt", "苹果这个词只出现在Alice的第一个库里。")
         self._upload(alice_h, alice_kb2, "a2.txt", "香蕉这个词只出现在Alice的第二个库里。")
         # Bob 库放一个带独特词的机密内容
-        self._upload(bob_h, self.bob_kb, "b.txt", "菠萝这个机密词只属于Bob的库。")
+        self._upload(bob_h, self.bob_kb, "b.txt", "隔离测试词只属于 Bob 的库。")
 
         # Alice 选「全部」(kb_id 不传) 问自己两个库的词 —— 都应召回
         r1 = self.client.post("/rag/ask", json={"question": "苹果在哪个库？"}, headers=alice_h)
@@ -231,12 +231,12 @@ class TestKbIsolation(unittest.TestCase):
         r2 = self.client.post("/rag/ask", json={"question": "香蕉在哪个库？"}, headers=alice_h)
         self.assertTrue(len(r2.json()["sources"]) >= 1)
 
-        # Alice 选「全部」问 Bob 库的机密词 —— 绝不能召回到 Bob 的来源
-        leak = self.client.post("/rag/ask", json={"question": "菠萝这个机密词是什么？"}, headers=alice_h)
+        # Alice 选「全部」问 Bob 库的隔离测试词 —— 绝不能召回到 Bob 的来源
+        leak = self.client.post("/rag/ask", json={"question": "隔离测试词是什么？"}, headers=alice_h)
         self.assertEqual(leak.status_code, 200)
         srcs = leak.json()["sources"]
         self.assertFalse(
-            any("菠萝" in s.get("content", "") or s.get("filename") == "b.txt" for s in srcs),
+            any("隔离测试词" in s.get("content", "") or s.get("filename") == "b.txt" for s in srcs),
             "普通用户选『全部』竟召回到他人库内容——多租户隔离被破坏！",
         )
 
@@ -257,21 +257,21 @@ class TestKbIsolation(unittest.TestCase):
             alice_h = self._hdr("alice", "alice123")
             bob_h = self._hdr("bob", "bob123")
             self._upload(alice_h, self.alice_kb, "a1.txt", "苹果这个词只出现在Alice的库里。")
-            self._upload(bob_h, self.bob_kb, "b.txt", "菠萝这个机密词只属于Bob的库。")
+            self._upload(bob_h, self.bob_kb, "b.txt", "隔离测试词只属于 Bob 的库。")
 
             # Alice 选「全部」能查到自己的词
             own = self.client.post("/rag/ask", json={"question": "苹果在哪个库？"}, headers=alice_h)
             self.assertEqual(own.status_code, 200)
             self.assertTrue(len(own.json()["sources"]) >= 1)
 
-            # 开着 rerank，Alice 选「全部」问 Bob 的机密词 —— 仍绝不能召回 Bob 来源
+            # 开着 rerank，Alice 选「全部」问 Bob 的隔离测试词 —— 仍绝不能召回 Bob 来源
             leak = self.client.post(
-                "/rag/ask", json={"question": "菠萝这个机密词是什么？"}, headers=alice_h
+                "/rag/ask", json={"question": "隔离测试词是什么？"}, headers=alice_h
             )
             self.assertEqual(leak.status_code, 200)
             srcs = leak.json()["sources"]
             self.assertFalse(
-                any("菠萝" in s.get("content", "") or s.get("filename") == "b.txt" for s in srcs),
+                any("隔离测试词" in s.get("content", "") or s.get("filename") == "b.txt" for s in srcs),
                 "开启 rerank 后普通用户『全部』竟召回他人库内容——多租户隔离被破坏！",
             )
         finally:
@@ -295,25 +295,84 @@ class TestKbIsolation(unittest.TestCase):
             alice_h = self._hdr("alice", "alice123")
             bob_h = self._hdr("bob", "bob123")
             self._upload(alice_h, self.alice_kb, "a1.txt", "苹果这个词只出现在Alice的库里。")
-            self._upload(bob_h, self.bob_kb, "b.txt", "菠萝这个机密词只属于Bob的库。")
+            self._upload(bob_h, self.bob_kb, "b.txt", "隔离测试词只属于 Bob 的库。")
 
             own = self.client.post("/rag/ask", json={"question": "苹果在哪个库？"}, headers=alice_h)
             self.assertEqual(own.status_code, 200)
             self.assertTrue(len(own.json()["sources"]) >= 1)
 
-            # 开着多查询，Alice 选「全部」问 Bob 的机密词 —— 仍绝不能召回 Bob 来源
+            # 开着多查询，Alice 选「全部」问 Bob 的隔离测试词 —— 仍绝不能召回 Bob 来源
             leak = self.client.post(
-                "/rag/ask", json={"question": "菠萝这个机密词是什么？"}, headers=alice_h
+                "/rag/ask", json={"question": "隔离测试词是什么？"}, headers=alice_h
             )
             self.assertEqual(leak.status_code, 200)
             srcs = leak.json()["sources"]
             self.assertFalse(
-                any("菠萝" in s.get("content", "") or s.get("filename") == "b.txt" for s in srcs),
+                any("隔离测试词" in s.get("content", "") or s.get("filename") == "b.txt" for s in srcs),
                 "开启多查询后普通用户『全部』竟召回他人库内容——多租户隔离被破坏！",
             )
         finally:
             config.MULTI_QUERY_ENABLED = orig_enabled
             qr.QUERY_REWRITE_PROVIDER = orig_provider
+
+    def test_ask_all_scopes_to_own_kbs_with_hybrid_and_context(self):
+        """隔离红线回归：hybrid/context 扩展仍不能把他人同名文件或关键词串进来。"""
+        import app.config as config
+
+        orig_mode = config.RETRIEVAL_MODE
+        orig_window = config.RETRIEVAL_CONTEXT_WINDOW
+        config.RETRIEVAL_MODE = "hybrid"
+        config.RETRIEVAL_CONTEXT_WINDOW = 1
+        try:
+            alice_h = self._hdr("alice", "alice123")
+            bob_h = self._hdr("bob", "bob123")
+            self._upload(alice_h, self.alice_kb, "same.txt", "苹果这个词只出现在Alice的库里。\n\nAlice普通邻居。")
+            self._upload(bob_h, self.bob_kb, "same.txt", "隔离测试词只属于 Bob 的库。\n\nBob 相邻测试片段。")
+
+            own = self.client.post("/rag/ask", json={"question": "苹果在哪个库？"}, headers=alice_h)
+            self.assertEqual(own.status_code, 200)
+            self.assertTrue(len(own.json()["sources"]) >= 1)
+
+            leak = self.client.post(
+                "/rag/ask", json={"question": "隔离测试词是什么？"}, headers=alice_h
+            )
+            self.assertEqual(leak.status_code, 200)
+            srcs = leak.json()["sources"]
+            self.assertFalse(
+                any("隔离测试词" in s.get("content", "") or "Bob 相邻测试片段" in s.get("content", "") for s in srcs),
+                "hybrid/context 扩展后普通用户『全部』竟串入他人库内容——多租户隔离被破坏！",
+            )
+        finally:
+            config.RETRIEVAL_MODE = orig_mode
+            config.RETRIEVAL_CONTEXT_WINDOW = orig_window
+
+    def test_ask_all_scopes_to_own_kbs_with_rerank_fusion(self):
+        """隔离红线回归：rerank_fusion 只重排限定范围内候选，不越库。"""
+        import app.config as config
+        import app.services.rerank_service as rerank_service
+
+        orig_mode = config.RETRIEVAL_MODE
+        orig_provider = rerank_service.RERANK_PROVIDER
+        config.RETRIEVAL_MODE = "rerank_fusion"
+        rerank_service.RERANK_PROVIDER = "fake"
+        try:
+            alice_h = self._hdr("alice", "alice123")
+            bob_h = self._hdr("bob", "bob123")
+            self._upload(alice_h, self.alice_kb, "a1.txt", "苹果这个词只出现在Alice的库里。")
+            self._upload(bob_h, self.bob_kb, "b.txt", "隔离测试词只属于 Bob 的库。")
+
+            leak = self.client.post(
+                "/rag/ask", json={"question": "隔离测试词是什么？"}, headers=alice_h
+            )
+            self.assertEqual(leak.status_code, 200)
+            srcs = leak.json()["sources"]
+            self.assertFalse(
+                any("隔离测试词" in s.get("content", "") or s.get("filename") == "b.txt" for s in srcs),
+                "rerank_fusion 后普通用户『全部』竟召回他人库内容——多租户隔离被破坏！",
+            )
+        finally:
+            config.RETRIEVAL_MODE = orig_mode
+            rerank_service.RERANK_PROVIDER = orig_provider
 
     def test_ask_all_admin_cross_kb(self):
         """管理员选「全部」：真跨库，能召回任意用户库的内容。"""

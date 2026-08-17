@@ -28,3 +28,5 @@ langchain-core==1.5.4
 # 检索质量专线：langchain_chroma 包住已存在的 Chroma 集合做召回适配（阶段1 地基），
 # 供 rerank / 多查询改写等增强层复用。惰性 import，未启用增强项也需安装以保证 import 不报错。
 langchain-chroma==1.1.0
+# BM25+jieba 混合检索（阶段2/6）：只在 hybrid 检索模式下使用；代码内有分词降级兜底。
+jieba

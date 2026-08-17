@@ -62,6 +62,10 @@
         <i class="fa-solid fa-broom" :class="{ spin: reconciling }"></i>
         {{ reconciling ? '对账中…' : '数据对账' }}
       </button>
+      <button class="btn-reconcile" type="button" :disabled="rechunking" @click="onRechunkDocx" title="按当前策略重新解析并切分本库所有 DOCX 文档">
+        <i class="fa-solid fa-file-word" :class="{ spin: rechunking }"></i>
+        {{ rechunking ? '重切中…' : '统一 DOCX 切分' }}
+      </button>
       <button class="btn-reconcile" type="button" :disabled="reloading" @click="onReload" title="重新加载向量库最新数据（外部改动后无需重启后端）">
         <i class="fa-solid fa-arrows-rotate" :class="{ spin: reloading }"></i>
         {{ reloading ? '重载中…' : '重载知识库' }}
@@ -215,6 +219,7 @@ import {
   extractErrorMessage,
   reconcile,
   reloadKnowledgeBase,
+  rechunkDocxDocuments,
   type StatsResponse,
   type DocumentItem,
 } from '../api/client'
@@ -253,6 +258,7 @@ const showUpload = ref(false)
 const showProgress = ref(false)
 const reconciling = ref(false)
 const reloading = ref(false)
+const rechunking = ref(false)
 const detailRow = ref<DocRow | null>(null)
 
 // 主题分类管理弹窗状态
@@ -431,6 +437,30 @@ async function onReload() {
   } finally {
     reloading.value = false
     window.setTimeout(() => (notice.value = ''), 3000)
+  }
+}
+
+async function onRechunkDocx() {
+  if (rechunking.value) return
+  if (!confirm('将按当前解析与段落切分策略重新入库本知识库下所有 DOCX 文档，旧 DOCX 片段会被替换。确定继续？')) return
+  rechunking.value = true
+  error.value = ''
+  try {
+    const res = await rechunkDocxDocuments(currentKbId.value)
+    if (res.processed === 0) {
+      notice.value = '当前知识库没有需要重切分的 DOCX 文档'
+    } else if (res.failed > 0) {
+      const failedNames = res.files.filter((f) => f.status === 'failed').map((f) => f.filename).join('、')
+      notice.value = `DOCX 重切完成：成功 ${res.succeeded} 个，失败 ${res.failed} 个（${failedNames}）`
+    } else {
+      notice.value = `DOCX 重切完成：成功处理 ${res.succeeded} 个文档`
+    }
+    await refresh()
+  } catch (e) {
+    error.value = extractErrorMessage(e)
+  } finally {
+    rechunking.value = false
+    window.setTimeout(() => (notice.value = ''), 5000)
   }
 }
 

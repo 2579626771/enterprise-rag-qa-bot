@@ -1,8 +1,10 @@
 from fastapi import FastAPI,HTTPException,UploadFile,File,Form,Depends,Query,BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pathlib import Path
 from typing import Optional
+import uuid
 from pydantic import BaseModel, Field
 from app.services.rag_service import answer_from_knowledge_base
 from app.services.document_service import (
@@ -18,11 +20,19 @@ from app.services import topic_service
 from app.services import user_service
 from app.services import kb_service
 from app.services import quota_service
+from app.services import feedback_service
+from app.services import notification_service
+from app.services import model_usage_service
 from app.services import auth_service
 from app.services import retrieval_config_service
 from app.services.auth_service import TokenError
 from app.services.kb_service import QuotaExceededError
-from app.config import RAG_TOP_K
+from app.config import (
+    FEEDBACK_ATTACHMENT_DIR,
+    FEEDBACK_ATTACHMENT_MAX_COUNT,
+    FEEDBACK_ATTACHMENT_MAX_MB,
+    RAG_TOP_K,
+)
 app = FastAPI()
 
 # 允许前端（Vite 开发服务器）跨域访问。
@@ -101,10 +111,16 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class RecoveryItem(BaseModel):
+    question: str
+    answer: str
+
+
 class RegisterRequest(BaseModel):
     username: str
     password: str
     display_name: str = ""
+    recovery_items: list[RecoveryItem] = []
 
 
 class CreateUserRequest(BaseModel):
@@ -112,6 +128,34 @@ class CreateUserRequest(BaseModel):
     password: str
     role: str = "user"
     display_name: str = ""
+
+
+class UpdateMeRequest(BaseModel):
+    display_name: str
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
+
+
+class ResetPasswordRequest(BaseModel):
+    new_password: str
+    force_change: bool = True
+
+
+class RecoveryQuestionsRequest(BaseModel):
+    username: str
+
+
+class RecoveryResetPasswordRequest(BaseModel):
+    username: str
+    answers: list[str]
+    new_password: str
+
+
+class SetRecoveryQuestionsRequest(BaseModel):
+    recovery_items: list[RecoveryItem]
 
 
 class CreateKbRequest(BaseModel):
@@ -170,11 +214,37 @@ class UpdateTopicRequest(BaseModel):
     name: str
 
 
+class CreateFeedbackRequest(BaseModel):
+    title: str
+    content: str = ""
+
+
+class AdminFeedbackUpdateRequest(BaseModel):
+    status: str
+    reply: str = ""
+
+
+class CreateNotificationRequest(BaseModel):
+    title: str
+    content: str = ""
+    send_to_all: bool = True
+    user_ids: list[int] = []
+
+
+class ModelUsageQuery(BaseModel):
+    days: int = Field(default=7, ge=1, le=90)
+    user_id: int | None = None
+    model_type: str | None = None
+
+
 # ===== 认证与用户管理接口 =====
 @app.post("/auth/login")
 def login(request: LoginRequest):
     """账密登录：成功返回 JWT 令牌与用户信息。登录后确保用户至少有一个默认知识库。"""
-    user = user_service.verify_password(request.username, request.password)
+    try:
+        user = user_service.authenticate(request.username, request.password)
+    except user_service.AccountLocked as exc:
+        raise HTTPException(status_code=423, detail=str(exc))
     if user is None:
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     # 保证用户一进来就有库可用（幂等）。
@@ -199,6 +269,7 @@ def register(request: RegisterRequest):
             username=request.username,
             password=request.password,
             display_name=request.display_name,
+            recovery_items=[item.model_dump() for item in request.recovery_items],
         )
     except ValueError as exc:
         # 校验失败或用户名已存在
@@ -218,6 +289,63 @@ def register(request: RegisterRequest):
 @app.get("/auth/me")
 def read_me(current_user: dict = Depends(get_current_user)):
     return current_user
+
+
+@app.patch("/auth/me")
+def update_me(request: UpdateMeRequest, current_user: dict = Depends(get_current_user)):
+    """当前用户修改个人资料（目前支持显示名）。"""
+    try:
+        return user_service.update_profile(current_user["id"], request.display_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/auth/password/change")
+def change_password(request: ChangePasswordRequest, current_user: dict = Depends(get_current_user)):
+    """当前用户修改自己的密码。"""
+    try:
+        return user_service.change_password(
+            current_user["id"],
+            request.old_password,
+            request.new_password,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.put("/auth/recovery/questions")
+def set_recovery_questions(request: SetRecoveryQuestionsRequest, current_user: dict = Depends(get_current_user)):
+    """当前用户设置/更新找回密码问题。"""
+    try:
+        return user_service.set_recovery_questions(
+            current_user["id"],
+            [item.model_dump() for item in request.recovery_items],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/auth/recovery/questions")
+def recovery_questions(request: RecoveryQuestionsRequest):
+    """忘记密码第一步：按用户名读取找回问题。"""
+    try:
+        return {"questions": user_service.get_recovery_questions(request.username)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/auth/recovery/reset-password")
+def recovery_reset_password(request: RecoveryResetPasswordRequest):
+    """忘记密码第二步：回答问题后自助重置密码。"""
+    try:
+        user = user_service.reset_password_by_recovery(
+            request.username,
+            request.answers,
+            request.new_password,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"reset": True, "user": user}
 
 
 @app.get("/users")
@@ -242,6 +370,23 @@ def create_user(request: CreateUserRequest, _: dict = Depends(require_admin)):
     except Exception:
         pass
     return user
+
+
+@app.post("/users/{user_id}/password-reset")
+def reset_user_password(user_id: int, request: ResetPasswordRequest, current_user: dict = Depends(require_admin)):
+    """管理员重置其他用户密码；重置后默认要求用户下次登录先改密。"""
+    if current_user.get("id") == user_id:
+        raise HTTPException(status_code=400, detail="请在个人中心修改自己的密码")
+    if user_service.get_by_id(user_id) is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    try:
+        return user_service.reset_password(
+            user_id,
+            request.new_password,
+            force_password_change=request.force_change,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.delete("/users/{user_id}")
@@ -394,6 +539,291 @@ def reject_quota_request(request_id: int, current_user: dict = Depends(require_a
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+# ===== 问题反馈 =====
+_ALLOWED_FEEDBACK_IMAGE_TYPES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
+_ALLOWED_FEEDBACK_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+
+def _feedback_attachment_dir(ticket_id: int) -> Path:
+    root = Path(FEEDBACK_ATTACHMENT_DIR)
+    path = root / str(ticket_id)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _ensure_feedback_access(ticket_id: int, current_user: dict) -> dict:
+    ticket = feedback_service.get(ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="反馈不存在")
+    is_admin = current_user.get("role") == user_service.ROLE_ADMIN
+    if not is_admin and ticket["user_id"] != current_user.get("id"):
+        raise HTTPException(status_code=404, detail="反馈不存在或无权访问")
+    return ticket
+
+
+@app.post("/feedback")
+def create_feedback(request: CreateFeedbackRequest, current_user: dict = Depends(get_current_user)):
+    """当前用户提交问题反馈。"""
+    try:
+        return feedback_service.create_ticket(current_user["id"], request.title, request.content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/feedback/mine")
+def my_feedback(current_user: dict = Depends(get_current_user)):
+    """当前用户查看自己的反馈历史。"""
+    return {"tickets": feedback_service.list_by_user(current_user["id"])}
+
+
+@app.post("/feedback/{ticket_id}/close")
+def close_feedback(ticket_id: int, current_user: dict = Depends(get_current_user)):
+    """反馈所属用户确认关闭。非本人反馈按不存在处理。"""
+    ticket = feedback_service.close_ticket(ticket_id, current_user["id"])
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="反馈不存在或无权访问")
+    return ticket
+
+
+@app.post("/feedback/{ticket_id}/attachments")
+def upload_feedback_attachments(
+    ticket_id: int,
+    files: list[UploadFile] = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """给自己的反馈上传截图附件。管理员不代传用户反馈截图。"""
+    ticket = _ensure_feedback_access(ticket_id, current_user)
+    if ticket["user_id"] != current_user.get("id"):
+        raise HTTPException(status_code=403, detail="只能给自己的反馈上传截图")
+    if not files:
+        raise HTTPException(status_code=400, detail="请选择截图文件")
+    current_count = len(ticket.get("attachments") or [])
+    if current_count + len(files) > FEEDBACK_ATTACHMENT_MAX_COUNT:
+        raise HTTPException(status_code=400, detail=f"每条反馈最多上传 {FEEDBACK_ATTACHMENT_MAX_COUNT} 张截图")
+
+    saved = []
+    max_bytes = FEEDBACK_ATTACHMENT_MAX_MB * 1024 * 1024
+    for file in files:
+        original_name = Path(file.filename or "screenshot").name
+        suffix = Path(original_name).suffix.lower()
+        content_type = (file.content_type or "").lower()
+        if suffix not in _ALLOWED_FEEDBACK_IMAGE_EXTS or content_type not in _ALLOWED_FEEDBACK_IMAGE_TYPES:
+            raise HTTPException(status_code=400, detail="仅支持 png/jpg/jpeg/webp/gif 截图")
+        content = file.file.read()
+        if len(content) > max_bytes:
+            raise HTTPException(status_code=400, detail=f"单张截图不能超过 {FEEDBACK_ATTACHMENT_MAX_MB} MB")
+        stored_name = f"{uuid.uuid4().hex}{_ALLOWED_FEEDBACK_IMAGE_TYPES[content_type]}"
+        path = _feedback_attachment_dir(ticket_id) / stored_name
+        path.write_bytes(content)
+        try:
+            saved.append(
+                feedback_service.add_attachment(
+                    ticket_id=ticket_id,
+                    original_name=original_name,
+                    stored_name=stored_name,
+                    content_type=content_type,
+                    size=len(content),
+                )
+            )
+        except ValueError as exc:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            raise HTTPException(status_code=400, detail=str(exc))
+    return {"attachments": saved}
+
+
+@app.get("/feedback/{ticket_id}/attachments/{attachment_id}")
+def download_feedback_attachment(
+    ticket_id: int,
+    attachment_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """鉴权下载反馈截图：普通用户只能看自己的反馈，管理员可看全部。"""
+    _ensure_feedback_access(ticket_id, current_user)
+    attachment = feedback_service.get_attachment_record(attachment_id)
+    if attachment is None or attachment.get("ticket_id") != ticket_id:
+        raise HTTPException(status_code=404, detail="截图不存在")
+    path = Path(FEEDBACK_ATTACHMENT_DIR) / str(ticket_id) / attachment.get("stored_name", "")
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="截图文件不存在")
+    return FileResponse(
+        path,
+        media_type=attachment.get("content_type") or "application/octet-stream",
+        filename=attachment.get("original_name") or path.name,
+    )
+
+
+@app.get("/feedback/admin")
+def admin_feedback(status: str = Query("all"), _: dict = Depends(require_admin)):
+    """管理员查看全部反馈，可按状态筛选。"""
+    try:
+        return {"tickets": feedback_service.list_all(status)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.patch("/feedback/admin/{ticket_id}")
+def update_feedback_by_admin(
+    ticket_id: int,
+    request: AdminFeedbackUpdateRequest,
+    current_user: dict = Depends(require_admin),
+):
+    """管理员更新反馈处理状态与回复。"""
+    try:
+        return feedback_service.admin_update(
+            ticket_id,
+            request.status,
+            request.reply,
+            current_user["id"],
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        if "不存在" in detail:
+            raise HTTPException(status_code=404, detail=detail)
+        raise HTTPException(status_code=400, detail=detail)
+
+
+# ===== 通知与消息中心 =====
+@app.get("/notifications/mine")
+def my_notifications(
+    include_closed: bool = Query(False),
+    current_user: dict = Depends(get_current_user),
+):
+    """当前用户的通知列表。默认不包含已关闭通知。"""
+    return {"notifications": notification_service.list_for_user(current_user["id"], include_closed)}
+
+
+@app.get("/notifications/unread-count")
+def unread_notification_count(current_user: dict = Depends(get_current_user)):
+    """当前用户未读通知数量。"""
+    return {"count": notification_service.count_unread(current_user["id"])}
+
+
+@app.post("/notifications/{notification_id}/read")
+def mark_notification_read(notification_id: int, current_user: dict = Depends(get_current_user)):
+    """当前用户确认已读某条通知。"""
+    notification = notification_service.mark_read(notification_id, current_user["id"])
+    if notification is None:
+        raise HTTPException(status_code=404, detail="通知不存在或无权访问")
+    return notification
+
+
+@app.post("/notifications/{notification_id}/close")
+def close_notification(notification_id: int, current_user: dict = Depends(get_current_user)):
+    """当前用户关闭某条通知。"""
+    notification = notification_service.close(notification_id, current_user["id"])
+    if notification is None:
+        raise HTTPException(status_code=404, detail="通知不存在或无权访问")
+    return notification
+
+
+@app.post("/notifications/admin")
+def create_notification(request: CreateNotificationRequest, current_user: dict = Depends(require_admin)):
+    """管理员下发通知：可发给全部用户或指定用户。"""
+    if request.send_to_all:
+        target_type = notification_service.TARGET_ALL
+        user_ids = [u["id"] for u in user_service.list_all()]
+    else:
+        target_type = notification_service.TARGET_USERS
+        existing = {u["id"] for u in user_service.list_all()}
+        user_ids = [uid for uid in request.user_ids if uid in existing]
+    try:
+        return notification_service.create_notification(
+            created_by=current_user["id"],
+            title=request.title,
+            content=request.content,
+            target_user_ids=user_ids,
+            target_type=target_type,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/notifications/admin")
+def admin_notifications(_: dict = Depends(require_admin)):
+    """管理员查看通知下发历史与收件统计。"""
+    return {"notifications": notification_service.list_admin()}
+
+
+# ===== 模型用量监控（仅管理员）=====
+def _user_lookup() -> dict[int, dict]:
+    return {u["id"]: u for u in user_service.list_all()}
+
+
+def _attach_user(row: dict, users: dict[int, dict]) -> dict:
+    item = dict(row)
+    user = users.get(item.get("user_id"))
+    item["username"] = user.get("username") if user else ""
+    item["display_name"] = user.get("display_name") if user else ""
+    return item
+
+
+def _validate_model_type(model_type: str | None) -> str | None:
+    if not model_type:
+        return None
+    value = model_type.strip()
+    if value not in model_usage_service.VALID_MODEL_TYPES:
+        raise HTTPException(status_code=400, detail="未知模型类型")
+    return value
+
+
+@app.get("/admin/model-usage/summary")
+def model_usage_summary(
+    days: int = Query(7, ge=1, le=90),
+    user_id: int | None = Query(None),
+    model_type: str | None = Query(None),
+    _: dict = Depends(require_admin),
+):
+    """管理员查看模型调用聚合统计：token、调用次数、延迟、失败率。"""
+    summary = model_usage_service.summarize(
+        days=days,
+        user_id=user_id,
+        model_type=_validate_model_type(model_type),
+    )
+    users = _user_lookup()
+    summary["by_user"] = [_attach_user(row, users) for row in summary.get("by_user", [])]
+    summary["alerts"] = [_attach_user(row, users) for row in model_usage_service.list_alerts(days=min(days, 1))]
+    return summary
+
+
+@app.get("/admin/model-usage/records")
+def model_usage_records(
+    days: int = Query(7, ge=1, le=90),
+    user_id: int | None = Query(None),
+    model_type: str | None = Query(None),
+    success: bool | None = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    _: dict = Depends(require_admin),
+):
+    """管理员查看最近模型调用明细。"""
+    users = _user_lookup()
+    records = model_usage_service.list_records(
+        days=days,
+        user_id=user_id,
+        model_type=_validate_model_type(model_type),
+        success=success,
+        limit=limit,
+    )
+    return {"records": [_attach_user(row, users) for row in records]}
+
+
+@app.get("/admin/model-usage/alerts")
+def model_usage_alerts(
+    days: int = Query(1, ge=1, le=30),
+    _: dict = Depends(require_admin),
+):
+    """管理员查看模型调用异常告警。"""
+    users = _user_lookup()
+    return {"alerts": [_attach_user(row, users) for row in model_usage_service.list_alerts(days=days)]}
+
+
 # ===== 业务接口（均带 kb 维度 + 归属校验）=====
 @app.get("/")
 def read_root():
@@ -448,10 +878,25 @@ def reload_knowledge_base(kb_id: int = Query(...), current_user: dict = Depends(
     return knowledge_base_service.reload_collection(kb_id)
 
 
+@app.post("/maintenance/rechunk-docx")
+def rechunk_docx(kb_id: int = Query(...), current_user: dict = Depends(get_current_user)):
+    """统一存量 DOCX 切分：按当前解析/段落切分策略重建该库下所有 Word 文档。"""
+    require_kb_access(kb_id, current_user)
+    directory = kb_documents_dir(kb_id)
+    with model_usage_service.usage_context(
+        user_id=current_user.get("id"),
+        kb_id=kb_id,
+        request_id=uuid.uuid4().hex,
+        operation="rechunk_docx",
+    ):
+        return knowledge_base_service.rechunk_docx_documents(kb_id, str(directory))
+
+
 def _ingest_in_background(
     file_path: str,
     kb_id: int,
     filename: str,
+    user_id: int | None = None,
 ) -> None:
     """后台执行「解析 + 向量化 + 写入向量库」，并把结果回写到元数据状态。
 
@@ -464,8 +909,14 @@ def _ingest_in_background(
       - 失败  ：解析/向量化异常或内容为空，附 error 原因；磁盘文件保留，便于排查/重传
     """
     try:
-        document = create_document_from_file(document_id=0, file_path=file_path)
-        ingest_result = knowledge_base_service.ingest_document(document, kb_id=kb_id)
+        with model_usage_service.usage_context(
+            user_id=user_id,
+            kb_id=kb_id,
+            request_id=uuid.uuid4().hex,
+            operation="document_ingest",
+        ):
+            document = create_document_from_file(document_id=0, file_path=file_path)
+            ingest_result = knowledge_base_service.ingest_document(document, kb_id=kb_id)
     except Exception as exc:
         # 保留文件（不 unlink），仅把失败原因写进元数据，前端可见、可手动删除重传。
         try:
@@ -539,7 +990,7 @@ def upload_document(
         pass
 
     # 注册后台入库任务：在本响应返回后同进程执行，不阻塞上传请求。
-    background.add_task(_ingest_in_background, str(file_path), kb_id, file.filename)
+    background.add_task(_ingest_in_background, str(file_path), kb_id, file.filename, current_user.get("id"))
 
     return {
         "filename": file.filename,
@@ -557,8 +1008,14 @@ def ingest_document(request: IngestRequest, current_user: dict = Depends(get_cur
     if not Path(request.file_path).exists():
         raise HTTPException(status_code=404, detail="File not found")
 
-    document = create_document_from_file(document_id=0, file_path=request.file_path)
-    result = knowledge_base_service.ingest_document(document, kb_id=request.kb_id)
+    with model_usage_service.usage_context(
+        user_id=current_user.get("id"),
+        kb_id=request.kb_id,
+        request_id=uuid.uuid4().hex,
+        operation="document_ingest",
+    ):
+        document = create_document_from_file(document_id=0, file_path=request.file_path)
+        result = knowledge_base_service.ingest_document(document, kb_id=request.kb_id)
     try:
         metadata_service.upsert(
             kb_id=request.kb_id,
@@ -738,41 +1195,48 @@ def ask_rag(request: RagAskRequest, current_user: dict = Depends(get_current_use
     # 这是「在线改配置能生效」的关键（rag_service 若只读模块常量，改库不会生效）。
     cfg = retrieval_config_service.resolve_effective(owner_id=owner_id, kb_id=request.kb_id)
 
-    if request.kb_id is not None:
-        # 单库：沿用原有归属校验 + 单库检索。
-        require_kb_access(request.kb_id, current_user)
-        result = answer_from_knowledge_base(
-            question=request.question,
-            top_k=cfg["top_k"],
-            max_distance=cfg["max_distance"],
-            judge_enabled=cfg["judge_enabled"],
-            answer_prompt=cfg["answer_prompt"],
-            kb_id=request.kb_id,
-        )
-    else:
-        # 全部：按角色限定范围。
-        is_admin = current_user.get("role") == user_service.ROLE_ADMIN
-        if is_admin:
-            # 管理员真全库（kb_id/kb_ids 都不传 → 不过滤）。
+    request_id = uuid.uuid4().hex
+    with model_usage_service.usage_context(
+        user_id=owner_id,
+        kb_id=request.kb_id,
+        request_id=request_id,
+        operation="rag_ask",
+    ):
+        if request.kb_id is not None:
+            # 单库：沿用原有归属校验 + 单库检索。
+            require_kb_access(request.kb_id, current_user)
             result = answer_from_knowledge_base(
                 question=request.question,
                 top_k=cfg["top_k"],
                 max_distance=cfg["max_distance"],
                 judge_enabled=cfg["judge_enabled"],
                 answer_prompt=cfg["answer_prompt"],
+                kb_id=request.kb_id,
             )
         else:
-            # 普通用户：把范围限定到自己拥有的所有库 —— 天然隔离，不泄露他人数据。
-            my_kbs = kb_service.list_by_owner(owner_id)
-            my_ids = [kb["id"] for kb in my_kbs]
-            result = answer_from_knowledge_base(
-                question=request.question,
-                top_k=cfg["top_k"],
-                max_distance=cfg["max_distance"],
-                judge_enabled=cfg["judge_enabled"],
-                answer_prompt=cfg["answer_prompt"],
-                kb_ids=my_ids,
-            )
+            # 全部：按角色限定范围。
+            is_admin = current_user.get("role") == user_service.ROLE_ADMIN
+            if is_admin:
+                # 管理员真全库（kb_id/kb_ids 都不传 → 不过滤）。
+                result = answer_from_knowledge_base(
+                    question=request.question,
+                    top_k=cfg["top_k"],
+                    max_distance=cfg["max_distance"],
+                    judge_enabled=cfg["judge_enabled"],
+                    answer_prompt=cfg["answer_prompt"],
+                )
+            else:
+                # 普通用户：把范围限定到自己拥有的所有库 —— 天然隔离，不泄露他人数据。
+                my_kbs = kb_service.list_by_owner(owner_id)
+                my_ids = [kb["id"] for kb in my_kbs]
+                result = answer_from_knowledge_base(
+                    question=request.question,
+                    top_k=cfg["top_k"],
+                    max_distance=cfg["max_distance"],
+                    judge_enabled=cfg["judge_enabled"],
+                    answer_prompt=cfg["answer_prompt"],
+                    kb_ids=my_ids,
+                )
 
     return {
         "question": request.question,

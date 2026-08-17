@@ -20,6 +20,8 @@ degraded 结果（answerable=True 放行 + confidence=low + reason 标注研判�
 让上层回退到「照常作答」，绝不因为防幻觉功能本身的故障而拒绝服务。
 """
 
+import time
+
 from app.config import (
     ANSWER_PROVIDER,
     DEEPSEEK_API_KEY,
@@ -27,6 +29,7 @@ from app.config import (
     DEEPSEEK_BASE_URL,
 )
 from app.utils.logger import get_logger
+from app.services import model_usage_service as model_usage
 
 logger = get_logger(__name__)
 
@@ -84,6 +87,7 @@ def _deepseek_judge_and_answer(question: str, context: str) -> dict:
     任何异常都不向上抛，转为 degraded 放行结果（answerable=True + confidence=low），
     让上层回退到「照常作答」——防幻觉功能自身的故障绝不能拖垮问答主流程。
     """
+    start = time.perf_counter()
     try:
         # 局部导入：只有真正启用 deepseek 研判时才加载 LangChain，
         # 未启用 JUDGE_ENABLED / 走 fake 时零依赖、零副作用。
@@ -123,12 +127,14 @@ def _deepseek_judge_and_answer(question: str, context: str) -> dict:
         )
 
         user_content = f"【问题】\n{question}\n\n【资料】\n{context}"
+        start = time.perf_counter()
         response = llm.invoke(
             [
                 {"role": "system", "content": _JUDGE_SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},
             ]
         )
+        usage = model_usage.extract_langchain_usage(response)
         text = (response.content or "").strip()
 
         # 解析 JSON：thinking 模型可能在 JSON 前后带思考文字，抠出第一个 {...} 块。
@@ -142,6 +148,17 @@ def _deepseek_judge_and_answer(question: str, context: str) -> dict:
         raw_answer = str(verdict.get("answer") or "")
         confidence = verdict.get("confidence")
         confidence = confidence if confidence in {"high", "low"} else "low"
+
+        model_usage.record_call(
+            model_type=model_usage.MODEL_JUDGE,
+            provider="deepseek",
+            model_name=DEEPSEEK_CHAT_MODEL,
+            operation="judge_answer",
+            success=True,
+            latency_ms=(time.perf_counter() - start) * 1000,
+            input_count=1,
+            **usage,
+        )
 
         if not answerable:
             # 拒答：统一话术，不采用模型可能编造的 answer 文本。
@@ -158,6 +175,17 @@ def _deepseek_judge_and_answer(question: str, context: str) -> dict:
             "confidence": confidence,
         }
     except Exception as exc:  # noqa: BLE001 —— 故意兜底：研判失败不拖垮主流程
+        model_usage.record_call(
+            model_type=model_usage.MODEL_JUDGE,
+            provider="deepseek",
+            model_name=DEEPSEEK_CHAT_MODEL,
+            operation="judge_answer",
+            success=False,
+            latency_ms=(time.perf_counter() - start) * 1000,
+            input_count=1,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
         logger.warning(f"研判调用失败，降级为放行照常作答：{type(exc).__name__}: {exc}")
         return {
             "answerable": True,

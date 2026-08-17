@@ -104,6 +104,22 @@
           </p>
         </section>
 
+        <section :id="ids.feedback" class="doc-sec">
+          <h2><i class="fa-solid fa-message"></i> 问题反馈</h2>
+          <p>
+            使用中遇到上传失败、问答异常、账号问题等情况，可进入左侧「问题反馈」提交标题、问题描述和截图。
+            管理员处理后，回复内容会显示在你的反馈记录里；确认问题已解决后，可点击「确认关闭」完成闭环。
+          </p>
+        </section>
+
+        <section :id="ids.notifications" class="doc-sec">
+          <h2><i class="fa-solid fa-bell"></i> 通知与消息中心</h2>
+          <p>
+            顶部「通知」入口会显示未读数量。收到管理员通知时，系统会弹出提醒；你可以点击「确认已读」保留在消息中心，
+            或点击「关闭通知」不再显示。之后也可从顶部通知入口查看历史未关闭消息。
+          </p>
+        </section>
+
         <section v-if="isAdmin" :id="ids.admin" class="doc-sec">
           <h2><i class="fa-solid fa-user-shield"></i> 管理员功能</h2>
           <p>管理员额外可见三个后台页面：</p>
@@ -111,6 +127,8 @@
             <li><strong>知识库管理</strong>：按用户查看/搜索全部知识库，进入某用户可管理其知识库与文档，并<strong>调整该用户的配额</strong>。</li>
             <li><strong>账户管理</strong>：新建、查看、删除用户账号。</li>
             <li><strong>申请审批</strong>：处理用户提交的配额申请（通过 / 驳回）。</li>
+            <li><strong>反馈处理</strong>：查看用户提交的问题反馈与截图，回复解决方法并流转状态。</li>
+            <li><strong>通知下发</strong>：向全部用户或指定用户发送系统通知，并查看未读/已读/关闭统计。</li>
           </ul>
         </section>
 
@@ -135,6 +153,8 @@ const ids = {
   upload: 'g-upload',
   ask: 'g-ask',
   quota: 'g-quota',
+  feedback: 'g-feedback',
+  notifications: 'g-notifications',
   admin: 'g-admin',
 } as const
 
@@ -147,6 +167,8 @@ const sections = [
   { id: ids.upload, title: '上传文档', icon: 'fa-solid fa-file-arrow-up' },
   { id: ids.ask, title: '智能问答', icon: 'fa-solid fa-comments' },
   { id: ids.quota, title: '申请配额', icon: 'fa-solid fa-paper-plane' },
+  { id: ids.feedback, title: '问题反馈', icon: 'fa-solid fa-message' },
+  { id: ids.notifications, title: '通知消息', icon: 'fa-solid fa-bell' },
   { id: ids.admin, title: '管理员功能', icon: 'fa-solid fa-user-shield', adminOnly: true },
 ]
 

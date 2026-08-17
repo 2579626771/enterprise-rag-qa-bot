@@ -29,6 +29,10 @@
         </button>
       </form>
 
+      <p class="login-help">
+        <a href="javascript:void(0)" @click="goForgotPassword">忘记密码？</a>
+        可用登录用户名和注册时设置的问题自助重置
+      </p>
       <p class="login-switch">
         还没有账户？<a href="javascript:void(0)" @click="goRegister">注册一个</a>
       </p>
@@ -53,6 +57,10 @@ const err = ref('')
 
 function goRegister() {
   router.push({ name: 'register' })
+}
+
+function goForgotPassword() {
+  router.push({ name: 'forgot-password' })
 }
 
 async function onSubmit() {
@@ -182,17 +190,23 @@ async function onSubmit() {
   font-size: 12px;
 }
 
+.login-help {
+  margin: 14px 0 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+}
 .login-switch {
-  margin: 16px 0 0;
+  margin: 8px 0 0;
   text-align: center;
   font-size: 13px;
   color: var(--muted);
 }
-.login-switch a {
+.login-help a, .login-switch a {
   color: var(--blue);
   text-decoration: none;
 }
-.login-switch a:hover {
+.login-help a:hover, .login-switch a:hover {
   text-decoration: underline;
 }
 </style>

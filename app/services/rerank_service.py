@@ -28,6 +28,7 @@ from app.config import (
     ALIYUN_RERANK_URL,
 )
 from app.utils.logger import get_logger
+from app.services import model_usage_service as model_usage
 
 logger = get_logger(__name__)
 
@@ -77,6 +78,7 @@ def _aliyun_rerank(query: str, documents: list[str], top_n: int) -> list[dict]:
 
     import time
 
+    start = time.perf_counter()
     last_exc: Exception | None = None
     for attempt in range(_HTTP_MAX_RETRIES):
         try:
@@ -84,6 +86,17 @@ def _aliyun_rerank(query: str, documents: list[str], top_n: int) -> list[dict]:
             with request.urlopen(req, timeout=_HTTP_TIMEOUT) as response:
                 raw = response.read()
             resp = json.loads(raw.decode("utf-8"))
+            usage = model_usage.extract_usage(resp)
+            model_usage.record_call(
+                model_type=model_usage.MODEL_RERANK,
+                provider="aliyun",
+                model_name=ALIYUN_RERANK_MODEL,
+                operation="rerank",
+                success=True,
+                latency_ms=(time.perf_counter() - start) * 1000,
+                input_count=len(documents),
+                **usage,
+            )
             results = resp.get("output", {}).get("results", [])
             # 规整：只保留 index/relevance_score，且过滤越界 index（防御）。
             cleaned = [
@@ -126,5 +139,15 @@ def rerank(query: str, documents: list[str], top_n: int) -> list[dict]:
             return _aliyun_rerank(query, documents, top_n)
         raise ValueError(f"Unsupported rerank provider: {RERANK_PROVIDER}")
     except Exception as exc:  # noqa: BLE001 —— 故意兜底：rerank 失败退回原顺序，不拖垮检索
+        model_usage.record_call(
+            model_type=model_usage.MODEL_RERANK,
+            provider=RERANK_PROVIDER,
+            model_name=ALIYUN_RERANK_MODEL,
+            operation="rerank",
+            success=False,
+            input_count=len(documents),
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
         logger.warning(f"rerank 调用失败，降级为保持原顺序：{type(exc).__name__}: {exc}")
         return [{"index": i, "relevance_score": 0.0} for i in range(top_n)]

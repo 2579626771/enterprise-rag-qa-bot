@@ -247,6 +247,17 @@ button { cursor: pointer; border: 0; background: none; }
   line-height: 1.65;
 }
 .bubble p { margin: 0; white-space: pre-wrap; }
+.typing-bubble { box-shadow: 0 0 0 1px rgb(30 58 95 / 8%) inset; }
+.typing-cursor {
+  display: inline-block;
+  width: 1px;
+  height: 1.1em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  background: var(--blue);
+  animation: cursor-blink 0.9s infinite;
+}
+@keyframes cursor-blink { 0%, 45% { opacity: 1; } 46%, 100% { opacity: 0; } }
 
 /* 研判徽标：拒答 / 低可信 */
 .verdict-badge {
@@ -592,6 +603,9 @@ button { cursor: pointer; border: 0; background: none; }
 .topic-tag { padding: 4px 10px; border-radius: 6px; background: var(--blue-3); color: var(--blue); font-size: 12px; }
 .status-badge { padding: 4px 10px; border-radius: 6px; background: #ecfdf5; color: #1d6f42; font-size: 12px; }
 .status-badge.pending { background: #fff7ed; color: #b4761d; }
+.status-badge.processing { background: #e8eef5; color: var(--blue); }
+.status-badge.resolved { background: #ecfdf5; color: #1d6f42; }
+.status-badge.closed { background: #f1f5f9; color: #64748b; }
 .status-badge.failed { background: #fde8e8; color: #d9534f; cursor: help; }
 .head-actions { display: flex; align-items: center; gap: 12px; }
 .muted-cell { color: var(--muted); font-size: 13px; }

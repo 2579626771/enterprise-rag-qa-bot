@@ -14,6 +14,7 @@ provider 开关：QUERY_REWRITE_PROVIDER=fake 走确定性启发式（加检索�
 """
 
 import json
+import time
 from urllib import request
 from urllib.error import URLError, HTTPError
 
@@ -23,6 +24,7 @@ from app.config import (
     DEEPSEEK_CHAT_MODEL,
 )
 from app.utils.logger import get_logger
+from app.services import model_usage_service as model_usage
 
 logger = get_logger(__name__)
 
@@ -71,9 +73,10 @@ def _deepseek_rewrite(question: str, n: int) -> list[str]:
         },
         method="POST",
     )
+    start = time.perf_counter()
     with request.urlopen(req, timeout=60) as response:
         response_data = json.loads(response.read().decode("utf-8"))
-
+    usage = model_usage.extract_usage(response_data)
     text = (response_data["choices"][0]["message"]["content"] or "").strip()
 
     # 解析 JSON 数组：thinking 模型可能在数组前后带思考文字，抠出第一个 [...] 块。
@@ -95,6 +98,16 @@ def _deepseek_rewrite(question: str, n: int) -> list[str]:
         result.append(s)
         if len(result) >= n:
             break
+    model_usage.record_call(
+        model_type=model_usage.MODEL_QUERY_REWRITE,
+        provider="deepseek",
+        model_name=DEEPSEEK_CHAT_MODEL,
+        operation="query_rewrite",
+        success=True,
+        latency_ms=(time.perf_counter() - start) * 1000,
+        input_count=1,
+        **usage,
+    )
     return result
 
 
@@ -114,8 +127,28 @@ def rewrite(question: str, n: int = 3) -> list[str]:
             return _deepseek_rewrite(question, n)
         raise ValueError(f"Unsupported query rewrite provider: {QUERY_REWRITE_PROVIDER}")
     except (HTTPError, URLError, TimeoutError, ConnectionError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        model_usage.record_call(
+            model_type=model_usage.MODEL_QUERY_REWRITE,
+            provider=QUERY_REWRITE_PROVIDER,
+            model_name=DEEPSEEK_CHAT_MODEL,
+            operation="query_rewrite",
+            success=False,
+            input_count=1,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
         logger.warning(f"查询改写失败，降级为只用原查询：{type(exc).__name__}: {exc}")
         return []
     except Exception as exc:  # noqa: BLE001 —— 兜底：改写失败绝不拖垮检索
+        model_usage.record_call(
+            model_type=model_usage.MODEL_QUERY_REWRITE,
+            provider=QUERY_REWRITE_PROVIDER,
+            model_name=DEEPSEEK_CHAT_MODEL,
+            operation="query_rewrite",
+            success=False,
+            input_count=1,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
         logger.warning(f"查询改写异常，降级为只用原查询：{type(exc).__name__}: {exc}")
         return []

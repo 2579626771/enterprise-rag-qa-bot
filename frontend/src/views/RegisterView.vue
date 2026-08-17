@@ -30,6 +30,15 @@
           <input v-model="password2" type="password" placeholder="再次输入密码" autocomplete="new-password" />
         </label>
 
+        <div class="recovery-box">
+          <h3>找回密码问题</h3>
+          <p>忘记密码时用于自助重置，请设置只有你知道的答案。</p>
+          <div v-for="(item, idx) in recoveryItems" :key="idx" class="recovery-item">
+            <input v-model="item.question" class="recovery-input" :placeholder="`问题 ${idx + 1}`" />
+            <input v-model="item.answer" class="recovery-input" :placeholder="`答案 ${idx + 1}`" />
+          </div>
+        </div>
+
         <p v-if="err" class="login-err">{{ err }}</p>
 
         <button class="login-btn" type="submit" :disabled="submitting">
@@ -58,6 +67,11 @@ const username = ref('')
 const displayName = ref('')
 const password = ref('')
 const password2 = ref('')
+const recoveryItems = ref([
+  { question: '', answer: '' },
+  { question: '', answer: '' },
+  { question: '', answer: '' },
+])
 const submitting = ref(false)
 const err = ref('')
 
@@ -69,6 +83,10 @@ function validate(): string {
   if (!USERNAME_RE.test(u)) return '用户名只能包含字母、数字及 _ . - @，长度 3-32 位'
   if (password.value.length < 8) return '密码至少 8 位'
   if (password.value !== password2.value) return '两次输入的密码不一致'
+  for (let i = 0; i < recoveryItems.value.length; i += 1) {
+    if (!recoveryItems.value[i].question.trim()) return `请填写第 ${i + 1} 个找回密码问题`
+    if (!recoveryItems.value[i].answer.trim()) return `请填写第 ${i + 1} 个找回密码答案`
+  }
   return ''
 }
 
@@ -82,7 +100,12 @@ async function onSubmit() {
   submitting.value = true
   err.value = ''
   try {
-    await register(username.value.trim(), password.value, displayName.value.trim())
+    await register(
+      username.value.trim(),
+      password.value,
+      displayName.value.trim(),
+      recoveryItems.value.map((item) => ({ question: item.question.trim(), answer: item.answer.trim() })),
+    )
     // 注册成功即自动登录，进入工作台
     router.push({ name: 'chat' })
   } catch (e) {
@@ -108,7 +131,7 @@ function goLogin() {
   background: linear-gradient(135deg, var(--blue) 0%, var(--blue-deep) 100%);
 }
 .login-card {
-  width: 380px;
+  width: 460px;
   max-width: 90vw;
   background: #fff;
   border-radius: 14px;
@@ -141,6 +164,13 @@ function goLogin() {
 .login-label i { color: var(--muted); width: 16px; text-align: center; }
 .login-label input { flex: 1; border: 0; outline: none; background: transparent; font-size: 14px; }
 .login-err { margin: 0; color: #d9534f; font-size: 13px; }
+.recovery-box { padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: #f8fafc; }
+.recovery-box h3 { margin: 0 0 4px; font-size: 14px; color: #1f2a33; }
+.recovery-box p { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
+.recovery-item { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+.recovery-item:last-child { margin-bottom: 0; }
+.recovery-input { min-width: 0; height: 36px; border: 1px solid var(--line); border-radius: 7px; padding: 0 10px; outline: none; font-size: 13px; background: #fff; }
+.recovery-input:focus { border-color: var(--blue-2); }
 .login-btn {
   margin-top: 6px;
   height: 46px;

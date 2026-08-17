@@ -8,7 +8,7 @@
 
 ## 项目一句话
 
-企业级多租户 RAG 问答系统（FastAPI + Chroma + 阿里云embedding + DeepSeek + Vue3）。已完成核心链路、认证、多租户隔离、答案层研判防幻觉；完成度约 85%，主要剩部署工程化与检索质量深化。
+企业级多租户 RAG 问答系统（FastAPI + Chroma + 阿里云embedding + DeepSeek + Vue3）。已完成核心链路、认证、多租户隔离、答案层研判防幻觉、P1 账号体验/反馈通知/模型监控、前端测试与检索质量阶段6；完成度约 96%，唯一硬门槛剩 P0 部署工程化。
 
 ## 铁律（最容易踩的坑）
 
@@ -16,9 +16,9 @@
 2. **必须用 `.venv`** 的 python，不是全局 python。
 3. **多租户隔离是红线**：任何"全部/跨库/扩大范围"的功能，普通用户只能看自己的库；改这类功能必配隔离回归测试。
 4. **改检索/研判后**，用 `eval/qa_set.json` 跑 `scripts/eval_*.py` 出 before/after 数字，再决定去留。
-5. 跑测试：`.venv/Scripts/python.exe -m unittest discover -s tests`（现 170 全绿）。
+5. 跑测试：`.venv/Scripts/python.exe -m unittest discover -s tests`（现 280 全绿）；前端 `cd frontend && npm test && npm run build`（Vitest 12 全绿）。
 
 ## 详细文档
 - 进度/待办：`PROJECT_STATUS.md`（本目录）
 - 每日工作：`../../Thinking_and_learning/Enterprise_RAG/daily_tasks.md`
-- 技术复盘：`../../Thinking_and_learning/Enterprise_RAG/KNOWLEDGE_NOTES.md`（#1–#77）
+- 技术复盘：`../../Thinking_and_learning/Enterprise_RAG/KNOWLEDGE_NOTES.md`（#1–#83）

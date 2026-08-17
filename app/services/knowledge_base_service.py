@@ -153,39 +153,66 @@ def search(
     elif kb_id is not None:
         where = {"kb_id": kb_id}
 
+    from app.config import (
+        HYBRID_BM25_TOP_K_MULTIPLIER,
+        MULTI_QUERY_COUNT,
+        MULTI_QUERY_ENABLED,
+        RERANK_ENABLED,
+        RERANK_STRATEGY,
+        RETRIEVAL_CONTEXT_MAX_CHARS,
+        RETRIEVAL_CONTEXT_WINDOW,
+        RETRIEVAL_MODE,
+    )
+
+    mode = (RETRIEVAL_MODE or "auto").strip().lower()
+    valid_modes = {
+        "auto", "vector", "multi_query", "rerank", "rerank_fusion",
+        "hybrid", "hybrid_rerank_fusion",
+    }
+    if mode not in valid_modes:
+        mode = "auto"
+
+    multi_query_on = (mode == "auto" and MULTI_QUERY_ENABLED) or mode == "multi_query"
+    hybrid_on = mode in {"hybrid", "hybrid_rerank_fusion"}
+    rerank_on = (mode == "auto" and RERANK_ENABLED) or mode in {
+        "rerank", "rerank_fusion", "hybrid_rerank_fusion",
+    }
+    rerank_strategy = "sort" if mode == "rerank" else RERANK_STRATEGY
+    if mode == "rerank_fusion" and rerank_strategy == "sort":
+        rerank_strategy = "weighted"
+    if mode == "hybrid_rerank_fusion" and rerank_strategy == "sort":
+        rerank_strategy = "weighted"
+
     # ★检索召回接入 LangChain（阶段1 地基）★
     # 经 langchain_chroma 的 similarity_search_with_score 召回，为后续检索增强（rerank、
-    # 多查询等）铺地基。similarity_search_with_score 返回的 score 即 Chroma 原始余弦距离
-    # （已实测与原生 collection.query 的 distance 逐位一致，无换算），distance 语义不漂移。
-    # embed_query 由 AliyunEmbeddings 委托 create_query_embedding，与原路径完全等价。
+    # 多查询等）铺地基。similarity_search_with_score 返回的 score 即 Chroma 原始余弦距离。
     from app.services.langchain_adapters import build_chroma_vectorstore
 
     vectorstore = build_chroma_vectorstore(_get_public_client(), collection.name)
 
     # ★多查询改写（multi-query，阶段4）★
-    # 从召回侧补强 Recall：把原问题改写成若干语义等价、措辞不同的查询，原查询 + 改写各自
-    # 召回 candidate_k 条，按 (filename, chunk_index) 去重、保留最小 distance（离得最近的那次
-    # 命中）。所有查询共用同一个 where 过滤——范围不变，隔离红线不受影响。原查询始终保底参与，
-    # 改写只做补充。MULTI_QUERY_ENABLED=false 时只用原查询，行为与阶段1/3 完全一致。
-    # 改写失败会自动降级为空列表（只用原查询），绝不中断检索。
-    from app.config import MULTI_QUERY_ENABLED, MULTI_QUERY_COUNT
-
+    # auto 模式下兼容旧开关；显式 RETRIEVAL_MODE=multi_query 时强制开启。
     queries = [question]
-    if MULTI_QUERY_ENABLED:
+    if multi_query_on:
         from app.services import query_rewrite_service
 
         rewrites = query_rewrite_service.rewrite(question, n=MULTI_QUERY_COUNT)
         queries.extend(rewrites)
 
-    # 多路召回合并：key=(filename, chunk_index)，值取「最小 distance」的那条候选。
+    # 多路召回合并：key=(kb_id, filename, chunk_index)，值取「最小 distance」的那条候选。
     merged: dict[tuple, dict] = {}
     for q in queries:
         scored = vectorstore.similarity_search_with_score(q, k=candidate_k, filter=where)
         for doc, distance in scored:
             metadata = doc.metadata or {}
-            key = (metadata.get("filename", ""), metadata.get("chunk_index", -1))
+            key = (
+                metadata.get("kb_id"),
+                metadata.get("filename", ""),
+                metadata.get("chunk_index", -1),
+            )
             cand = {
                 "content": doc.page_content,
+                "kb_id": metadata.get("kb_id"),
                 "filename": metadata.get("filename", ""),
                 "chunk_index": metadata.get("chunk_index", -1),
                 "distance": distance,
@@ -197,26 +224,21 @@ def search(
     # 按 distance 升序，得到与「单查询召回」同构的候选列表（下游 rerank/过滤逻辑完全复用）。
     candidates = sorted(merged.values(), key=lambda c: c["distance"])
 
-    # ★检索重排（rerank，阶段3）★
-    # 双塔向量召回是「粗排」（按余弦距离），交叉编码器 rerank 是「精排」——对 query 与每条
-    # 候选逐对打分，更能拉开相关/不相关的分差、修 hard case 漏召回。这里仅用 rerank 分数
-    # 「重新排序 candidates」，每条的向量 distance 字段原样保留（阈值过滤仍用它，
-    # RAG_MAX_DISTANCE 与答案层研判语义均不受影响）。RERANK_ENABLED=false 时保持距离原序，
-    # 行为与阶段1 完全一致。rerank 内部失败会自动降级为原顺序，绝不中断检索。
-    from app.config import RERANK_ENABLED
+    # ★混合检索（BM25+jieba）★
+    # 只从已经限定 where 的范围内取片段，和向量候选 RRF 融合；不参与范围决策，不破坏隔离。
+    if hybrid_on:
+        from app.services import hybrid_search_service
 
-    if RERANK_ENABLED and candidates:
-        from app.services import rerank_service
-
-        order = rerank_service.rerank(
-            question, [c["content"] for c in candidates], top_n=len(candidates)
+        bm25_rows = hybrid_search_service.rows_from_collection(collection, where)
+        bm25_top_k = min(max(top_k * HYBRID_BM25_TOP_K_MULTIPLIER, top_k), len(bm25_rows))
+        candidates = hybrid_search_service.hybrid_rank(
+            question, candidates, bm25_rows, bm25_top_k=bm25_top_k
         )
-        ranked_idx = [o["index"] for o in order]
-        # 按 rerank 次序重排；防御性地把未在返回中的候选（异常降级/越界时）追加到末尾，保证不丢。
-        seen = set(ranked_idx)
-        reordered = [candidates[i] for i in ranked_idx]
-        reordered.extend(candidates[i] for i in range(len(candidates)) if i not in seen)
-        candidates = reordered
+
+    # ★检索重排（rerank，阶段3/融合）★
+    # sort 为旧纯 rerank；window/weighted 为阶段6新增融合策略。rerank 只改顺序、不改原 distance。
+    if rerank_on and candidates:
+        candidates = _apply_rerank(question, candidates, top_k=top_k, strategy=rerank_strategy)
 
     # 过短片段（标题、目录行等，如"业务用户创建""3.3 xxx 14"）几乎没有回答价值，先剔除。
     MIN_CONTENT_LEN = 15
@@ -231,13 +253,201 @@ def search(
             if len(hits) >= top_k:
                 break
 
+    if RETRIEVAL_CONTEXT_WINDOW > 0 and hits:
+        hits = _expand_hit_contexts(
+            collection,
+            hits,
+            window=RETRIEVAL_CONTEXT_WINDOW,
+            max_chars=RETRIEVAL_CONTEXT_MAX_CHARS,
+            fallback_kb_id=kb_id,
+        )
+
     return hits
+
+
+def _apply_rerank(question: str, candidates: list[dict], top_k: int, strategy: str) -> list[dict]:
+    """按指定策略应用 rerank，且保留每条候选的原始 distance。"""
+    if not candidates:
+        return candidates
+
+    import app.config as config
+    from app.services import rerank_service
+
+    strategy = (strategy or "sort").strip().lower()
+    if strategy not in {"sort", "window", "weighted"}:
+        strategy = "sort"
+
+    if strategy == "sort":
+        order = rerank_service.rerank(
+            question, [c["content"] for c in candidates], top_n=len(candidates)
+        )
+        ranked_idx = [o["index"] for o in order if 0 <= o.get("index", -1) < len(candidates)]
+        seen = set(ranked_idx)
+        reordered = [candidates[i] for i in ranked_idx]
+        reordered.extend(candidates[i] for i in range(len(candidates)) if i not in seen)
+        return reordered
+
+    window_size = min(
+        len(candidates),
+        max(top_k, top_k * max(1, int(getattr(config, "RERANK_WINDOW_MULTIPLIER", 2)))),
+    )
+    prefix = candidates[:window_size]
+    suffix = candidates[window_size:]
+    order = rerank_service.rerank(question, [c["content"] for c in prefix], top_n=len(prefix))
+
+    if strategy == "window":
+        ranked_idx = [o["index"] for o in order if 0 <= o.get("index", -1) < len(prefix)]
+        seen = set(ranked_idx)
+        reordered = [prefix[i] for i in ranked_idx]
+        reordered.extend(prefix[i] for i in range(len(prefix)) if i not in seen)
+        return reordered + suffix
+
+    # weighted：向量距离（越小越好）与 rerank 分（越大越好）归一化后加权。
+    scores = {o["index"]: float(o.get("relevance_score", 0.0)) for o in order if 0 <= o.get("index", -1) < len(prefix)}
+    distances = [float(c.get("distance", 0.5)) for c in prefix]
+    min_d, max_d = min(distances), max(distances)
+    min_s = min(scores.values()) if scores else 0.0
+    max_s = max(scores.values()) if scores else 0.0
+    weight = min(1.0, max(0.0, float(getattr(config, "RERANK_WEIGHT", 0.6))))
+
+    def norm_distance(value: float) -> float:
+        if max_d == min_d:
+            return 0.0
+        return (value - min_d) / (max_d - min_d)
+
+    def norm_score(value: float) -> float:
+        if max_s == min_s:
+            return 0.0
+        return (value - min_s) / (max_s - min_s)
+
+    weighted = []
+    for idx, cand in enumerate(prefix):
+        rerank_score = scores.get(idx, min_s)
+        # combined 越小越靠前：距离越小越好，rerank 越大越好。
+        combined = (1 - weight) * norm_distance(float(cand.get("distance", 0.5))) + weight * (1 - norm_score(rerank_score))
+        enriched = dict(cand)
+        enriched["rerank_score"] = rerank_score
+        enriched["rerank_fusion_score"] = combined
+        weighted.append(enriched)
+    weighted.sort(key=lambda c: (c.get("rerank_fusion_score", 1.0), c.get("distance", 1.0)))
+    return weighted + suffix
+
+
+def _expand_hit_contexts(collection, hits: list[dict], window: int, max_chars: int, fallback_kb_id: int | None) -> list[dict]:
+    """把最终命中的 chunk 扩展为同文件相邻 chunk 上下文。
+
+    只按 hit 自身的 kb_id（或单库 fallback_kb_id）扩展，避免同名文件跨库串入导致泄露。
+    """
+    if window <= 0:
+        return hits
+
+    expanded_hits = []
+    cache: dict[tuple, dict[int, str]] = {}
+    for hit in hits:
+        filename = hit.get("filename", "")
+        chunk_index = hit.get("chunk_index", -1)
+        hit_kb_id = hit.get("kb_id", fallback_kb_id)
+        if not filename or hit_kb_id is None or chunk_index is None or chunk_index < 0:
+            expanded_hits.append(hit)
+            continue
+
+        key = (hit_kb_id, filename)
+        if key not in cache:
+            result = collection.get(
+                where={"$and": [{"kb_id": hit_kb_id}, {"filename": filename}]},
+                include=["documents", "metadatas"],
+            )
+            chunks: dict[int, str] = {}
+            for doc, metadata in zip(result.get("documents") or [], result.get("metadatas") or []):
+                meta = metadata or {}
+                idx = meta.get("chunk_index")
+                if isinstance(idx, int):
+                    chunks[idx] = doc or ""
+            cache[key] = chunks
+
+        chunks = cache[key]
+        indexes = [i for i in range(chunk_index - window, chunk_index + window + 1) if i in chunks]
+        if not indexes:
+            expanded_hits.append(hit)
+            continue
+        parts = [chunks[i] for i in indexes if chunks.get(i)]
+        content = "\n".join(parts).strip()
+        if max_chars > 0 and len(content) > max_chars:
+            content = content[:max_chars]
+        enriched = dict(hit)
+        enriched["content"] = content or hit.get("content", "")
+        enriched["expanded_from"] = chunk_index
+        enriched["expanded_chunk_indexes"] = indexes
+        expanded_hits.append(enriched)
+    return expanded_hits
 
 
 def delete_document(filename: str, kb_id: int) -> None:
     """删除指定知识库下某个文档的所有片段。"""
     collection = get_collection()
     collection.delete(where={"$and": [{"kb_id": kb_id}, {"filename": filename}]})
+
+
+def rechunk_docx_documents(kb_id: int, scope_dir: str) -> dict:
+    """按当前 DOCX 解析与段落切分策略重建某知识库下的存量 Word 文档。
+
+    只处理 scope_dir 根目录下的 .docx 文件。每个文件先删除旧向量片段，再重新解析、切分、
+    embedding 并 upsert，避免旧切分策略留下的 chunk_index 残留。单文件失败不影响整批，
+    失败原因回写到元数据，便于前端展示与后续排查。
+    """
+    from pathlib import Path
+    from app.services.document_service import create_document_from_file
+    from app.services import metadata_service
+
+    directory = Path(scope_dir)
+    if not directory.exists():
+        return {"processed": 0, "succeeded": 0, "failed": 0, "skipped": 0, "files": []}
+
+    files = [p for p in sorted(directory.iterdir()) if p.is_file()]
+    docx_files = [p for p in files if p.suffix.lower() == ".docx"]
+    results = []
+    succeeded = 0
+    failed = 0
+
+    for path in docx_files:
+        filename = path.name
+        try:
+            delete_document(filename, kb_id=kb_id)
+            document = create_document_from_file(document_id=0, file_path=str(path))
+            ingest_result = ingest_document(document, kb_id=kb_id)
+            chunk_count = int(ingest_result.get("chunk_count") or 0)
+            if chunk_count == 0:
+                raise ValueError("文档内容为空或无法提取有效文本，未入库")
+            metadata_service.upsert(
+                kb_id=kb_id,
+                filename=filename,
+                status="就绪",
+                chunk_count=chunk_count,
+                error="",
+            )
+            results.append({"filename": filename, "status": "success", "chunk_count": chunk_count, "error": ""})
+            succeeded += 1
+        except Exception as exc:  # noqa: BLE001 —— 单文件失败要继续处理后续文件
+            try:
+                metadata_service.upsert(
+                    kb_id=kb_id,
+                    filename=filename,
+                    status="失败",
+                    chunk_count=0,
+                    error=f"DOCX 重切分失败：{exc}",
+                )
+            except Exception:
+                pass
+            results.append({"filename": filename, "status": "failed", "chunk_count": 0, "error": str(exc)})
+            failed += 1
+
+    return {
+        "processed": len(docx_files),
+        "succeeded": succeeded,
+        "failed": failed,
+        "skipped": len(files) - len(docx_files),
+        "files": results,
+    }
 
 
 def delete_kb(kb_id: int) -> int:
