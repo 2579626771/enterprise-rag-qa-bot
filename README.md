@@ -106,9 +106,3 @@ npm run build
 docker compose --env-file .env.production.example config
 ```
 
-## 安全与公开仓库约定
-
-- 不提交 `.env`、真实 API Key、真实数据库密码、JWT secret、证书、日志、上传文档、向量库、反馈附件或内部评测数据。
-- `eval/qa_set.example.json` 是脱敏示例，真实评测集和评测结果应保留在本地。
-- `data/sample.txt` 与 `data/upload_demo.txt` 仅用于演示解析和上传流程，不包含真实业务内容。
-- 如果曾经误提交真实密钥，应立即轮换密钥，并根据需要清理 Git 历史。
