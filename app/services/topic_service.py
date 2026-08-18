@@ -6,7 +6,7 @@
 设计要点
 --------
 1. 两套仓库实现，接口一致：MySQLTopicRepo（真实落库）/ InMemoryTopicRepo（降级+测试）。
-2. 懒连接 + 自动降级：连不上 MySQL 时切换到内存仓库，不拖垮主流程。
+2. 懒连接 + 开发降级：开发环境连不上 MySQL 时切换到内存仓库；生产环境直接失败。
 3. 自动建表：按 (kb_id, name) 唯一；旧版无 kb_id 列的表检测到后 DROP 重建
    （旧数据仅为全局默认种子，可安全丢弃）。
 4. 幂等新增：同库重复新增同名分类返回既有项，不报错。
@@ -25,6 +25,7 @@ from app.config import (
     MYSQL_PASSWORD,
     MYSQL_PORT,
     MYSQL_USER,
+    require_mysql,
 )
 from app.utils.logger import get_logger
 
@@ -305,6 +306,8 @@ _repo = None
 
 def _build_repo():
     if not MYSQL_ENABLED:
+        if require_mysql():
+            raise RuntimeError("生产环境必须启用 MySQL，不能使用内存主题仓库")
         logger.info("MYSQL_ENABLED=false，主题分类使用内存仓库（按库隔离，不落盘）。")
         return InMemoryTopicRepo()
     try:
@@ -312,6 +315,8 @@ def _build_repo():
         logger.info("主题分类已接入 MySQL：%s:%s/%s", MYSQL_HOST, MYSQL_PORT, MYSQL_DATABASE)
         return repo
     except Exception as exc:
+        if require_mysql():
+            raise RuntimeError(f"生产环境连接 MySQL 失败，主题仓库不可降级：{exc}") from exc
         logger.warning("接入 MySQL 失败，降级为内存主题分类（按库隔离，不落盘）：%s", exc)
         return InMemoryTopicRepo()
 

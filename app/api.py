@@ -11,6 +11,7 @@ from app.services.document_service import (
     list_text_files,
     create_document_from_file,
     kb_documents_dir,
+    sanitize_upload_filename,
     SUPPORTED_EXTENSIONS,
 )
 from app.services import knowledge_base_service
@@ -28,20 +29,22 @@ from app.services import retrieval_config_service
 from app.services.auth_service import TokenError
 from app.services.kb_service import QuotaExceededError
 from app.config import (
+    CORS_ORIGINS,
+    DOCUMENT_UPLOAD_MAX_MB,
     FEEDBACK_ATTACHMENT_DIR,
     FEEDBACK_ATTACHMENT_MAX_COUNT,
     FEEDBACK_ATTACHMENT_MAX_MB,
     RAG_TOP_K,
+    check_mysql_ready,
+    is_production,
+    validate_production_config,
 )
 app = FastAPI()
 
-# 允许前端（Vite 开发服务器）跨域访问。
+# 允许配置的前端来源跨域访问；生产同域 Nginx 访问通常不会触发 CORS。
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -50,8 +53,26 @@ app.add_middleware(
 
 @app.on_event("startup")
 def _startup():
-    """服务启动：确保至少有一个管理员账号（首次启动时按配置预置）。"""
+    """服务启动：先过生产硬门槛，再预置管理员账号。"""
+    validate_production_config()
+    if is_production():
+        check_mysql_ready()
     user_service.ensure_default_admin()
+
+
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+def readyz():
+    try:
+        validate_production_config()
+        check_mysql_ready()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return {"status": "ready"}
 
 
 # ===== 认证依赖 =====
@@ -964,22 +985,36 @@ def upload_document(
     """
     require_kb_access(kb_id, current_user)
 
-    suffix = Path(file.filename).suffix.lower()
+    filename = sanitize_upload_filename(file.filename)
+    suffix = Path(filename).suffix.lower()
     if suffix not in SUPPORTED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported file type. Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}",
         )
     documents_dir = kb_documents_dir(kb_id)
-    file_path = documents_dir / file.filename
-    content = file.file.read()
-    file_path.write_bytes(content)
+    file_path = documents_dir / filename
+    max_bytes = DOCUMENT_UPLOAD_MAX_MB * 1024 * 1024
+    written = 0
+    try:
+        with file_path.open("wb") as out:
+            while chunk := file.file.read(1024 * 1024):
+                written += len(chunk)
+                if written > max_bytes:
+                    raise HTTPException(status_code=413, detail=f"文件不能超过 {DOCUMENT_UPLOAD_MAX_MB} MB")
+                out.write(chunk)
+    except HTTPException:
+        try:
+            file_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
     # 先把元数据置为「处理中」，让列表立刻能看到这条记录及其状态。
     try:
         metadata_service.upsert(
             kb_id=kb_id,
-            filename=file.filename,
+            filename=filename,
             topic=topic,
             description=description,
             status="处理中",
@@ -990,23 +1025,31 @@ def upload_document(
         pass
 
     # 注册后台入库任务：在本响应返回后同进程执行，不阻塞上传请求。
-    background.add_task(_ingest_in_background, str(file_path), kb_id, file.filename, current_user.get("id"))
+    background.add_task(_ingest_in_background, str(file_path), kb_id, filename, current_user.get("id"))
 
     return {
-        "filename": file.filename,
+        "filename": filename,
         "file_path": str(file_path),
         "status": "处理中",
     }
 
 
 @app.post("/documents/ingest")
-def ingest_document(request: IngestRequest, current_user: dict = Depends(get_current_user)):
-    """把一个已存在的文件入库到指定知识库（不上传，只入库）。"""
+def ingest_document(request: IngestRequest, current_user: dict = Depends(require_admin)):
+    """管理员把知识库目录内已存在的文件入库（不上传，只入库）。"""
     require_kb_access(request.kb_id, current_user)
     if not request.file_path.strip():
         raise HTTPException(status_code=400, detail="File path cannot be empty")
-    if not Path(request.file_path).exists():
+    file_path = Path(request.file_path)
+    if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
+    try:
+        resolved_file = file_path.resolve()
+        resolved_dir = kb_documents_dir(request.kb_id).resolve()
+        if not resolved_file.is_relative_to(resolved_dir):
+            raise HTTPException(status_code=403, detail="File path is outside this knowledge base directory")
+    except RuntimeError:
+        raise HTTPException(status_code=400, detail="File path cannot be resolved")
 
     with model_usage_service.usage_context(
         user_id=current_user.get("id"),
@@ -1014,7 +1057,7 @@ def ingest_document(request: IngestRequest, current_user: dict = Depends(get_cur
         request_id=uuid.uuid4().hex,
         operation="document_ingest",
     ):
-        document = create_document_from_file(document_id=0, file_path=request.file_path)
+        document = create_document_from_file(document_id=0, file_path=str(resolved_file))
         result = knowledge_base_service.ingest_document(document, kb_id=request.kb_id)
     try:
         metadata_service.upsert(

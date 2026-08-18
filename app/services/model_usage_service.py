@@ -29,6 +29,7 @@ from app.config import (
     MYSQL_PASSWORD,
     MYSQL_PORT,
     MYSQL_USER,
+    require_mysql,
 )
 from app.utils.logger import get_logger
 
@@ -365,6 +366,8 @@ _repo = None
 
 def _build_repo():
     if not MYSQL_ENABLED:
+        if require_mysql():
+            raise RuntimeError("生产环境必须启用 MySQL，不能使用内存模型用量仓库")
         logger.info("MYSQL_ENABLED=false，模型用量监控使用内存仓库（重启即失）。")
         return InMemoryModelUsageRepo()
     try:
@@ -372,6 +375,8 @@ def _build_repo():
         logger.info("模型用量监控已接入 MySQL：%s:%s/%s", MYSQL_HOST, MYSQL_PORT, MYSQL_DATABASE)
         return repo
     except Exception as exc:  # noqa: BLE001
+        if require_mysql():
+            raise RuntimeError(f"生产环境连接 MySQL 失败，模型用量仓库不可降级：{exc}") from exc
         logger.warning("接入 MySQL 失败，模型用量监控降级为内存仓库（重启即失）：%s", exc)
         return InMemoryModelUsageRepo()
 

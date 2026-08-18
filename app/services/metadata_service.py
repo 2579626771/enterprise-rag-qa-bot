@@ -6,7 +6,7 @@
 设计要点
 --------
 1. 两套仓库实现，接口一致：MySQLMetadataRepo（真实落库）/ InMemoryMetadataRepo（降级+测试）。
-2. 懒连接 + 自动降级：连不上 MySQL 时切换到内存仓库，不拖垮主流程。
+2. 懒连接 + 开发降级：开发环境连不上 MySQL 时切换到内存仓库；生产环境直接失败。
 3. 自动建表：CREATE TABLE IF NOT EXISTS。
 
 对外模块级函数：upsert / list_all / get / delete / delete_by_kb（均带 kb_id）。
@@ -24,6 +24,7 @@ from app.config import (
     MYSQL_PASSWORD,
     MYSQL_PORT,
     MYSQL_USER,
+    require_mysql,
 )
 from app.utils.logger import get_logger
 
@@ -317,6 +318,8 @@ _repo = None
 
 def _build_repo():
     if not MYSQL_ENABLED:
+        if require_mysql():
+            raise RuntimeError("生产环境必须启用 MySQL，不能使用内存文档元数据仓库")
         logger.info("MYSQL_ENABLED=false，文档元数据使用内存仓库（不落盘）。")
         return InMemoryMetadataRepo()
     try:
@@ -324,6 +327,8 @@ def _build_repo():
         logger.info("文档元数据已接入 MySQL：%s:%s/%s", MYSQL_HOST, MYSQL_PORT, MYSQL_DATABASE)
         return repo
     except Exception as exc:
+        if require_mysql():
+            raise RuntimeError(f"生产环境连接 MySQL 失败，文档元数据仓库不可降级：{exc}") from exc
         logger.warning("接入 MySQL 失败，降级为内存元数据（仅不落盘，问答/上传不受影响）：%s", exc)
         return InMemoryMetadataRepo()
 

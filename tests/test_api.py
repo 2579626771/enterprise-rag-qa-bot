@@ -5,6 +5,7 @@ import chromadb
 from pathlib import Path
 import app.services.embedding_service as embedding_service
 import app.services.answer_service as answer_service
+import app.api as api_module
 from app.services import knowledge_base_service
 from app.services import metadata_service
 from app.services import user_service
@@ -22,6 +23,7 @@ class TestApi(unittest.TestCase):
     def setUp(self):
         self.original_embedding_provider = embedding_service.EMBEDDING_PROVIDER
         self.original_answer_provider = answer_service.ANSWER_PROVIDER
+        self.original_upload_max_mb = api_module.DOCUMENT_UPLOAD_MAX_MB
         embedding_service.EMBEDDING_PROVIDER = "fake"
         answer_service.ANSWER_PROVIDER = "fake"
         logging.disable(logging.CRITICAL)
@@ -60,6 +62,7 @@ class TestApi(unittest.TestCase):
     def tearDown(self):
         embedding_service.EMBEDDING_PROVIDER = self.original_embedding_provider
         answer_service.ANSWER_PROVIDER = self.original_answer_provider
+        api_module.DOCUMENT_UPLOAD_MAX_MB = self.original_upload_max_mb
 
         # 先算出物理目录（依赖 kb 仓库），再重置仓库；清掉该库目录及其空的用户父目录。
         kb_dir = kb_documents_dir(self.kb_id)
@@ -96,6 +99,21 @@ class TestApi(unittest.TestCase):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"message": "Enterprise RAG API is running"})
+
+    def test_healthz(self):
+        response = self.client.get("/healthz")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "ok"})
+
+    def test_readyz_reports_mysql_failure(self):
+        original = api_module.check_mysql_ready
+        api_module.check_mysql_ready = lambda: (_ for _ in ()).throw(RuntimeError("mysql down"))
+        try:
+            response = self.client.get("/readyz")
+        finally:
+            api_module.check_mysql_ready = original
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("mysql down", response.json()["detail"])
 
     def test_list_documents(self):
         response = self.client.get("/documents", params={"kb_id": self.kb_id})
@@ -142,6 +160,23 @@ class TestApi(unittest.TestCase):
         self.assertIn("status", response.json())
         self.assertTrue((kb_documents_dir(self.kb_id) / "test_upload.txt").exists())
 
+    def test_upload_sanitizes_path_traversal_filename(self):
+        response = self._upload("../evil.txt", "路径穿越文件名应被清洗。")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["filename"], "evil.txt")
+        self.assertTrue((kb_documents_dir(self.kb_id) / "evil.txt").exists())
+        self.assertFalse((kb_documents_dir(self.kb_id).parent / "evil.txt").exists())
+
+    def test_upload_rejects_unsupported_extension(self):
+        response = self._upload("bad.exe", "bad")
+        self.assertEqual(response.status_code, 400)
+
+    def test_upload_rejects_oversized_file_and_removes_partial(self):
+        api_module.DOCUMENT_UPLOAD_MAX_MB = 0
+        response = self._upload("too_big.txt", "x")
+        self.assertEqual(response.status_code, 413)
+        self.assertFalse((kb_documents_dir(self.kb_id) / "too_big.txt").exists())
+
     def test_upload_then_ask_rag(self):
         upload_response = self._upload(
             "test_upload.txt", "在测试上传文档中，可以使用 read_text_file 读取文档内容。"
@@ -158,13 +193,34 @@ class TestApi(unittest.TestCase):
         self.assertTrue(len(ask_response.json()["sources"]) >= 1)
 
     def test_ingest_document(self):
+        sample = kb_documents_dir(self.kb_id) / "sample_ingest.txt"
+        sample.write_text("可以使用 read_text_file(file_path) 函数读取 txt 文档内容。", encoding="utf-8")
         response = self.client.post(
             "/documents/ingest",
-            json={"file_path": "data/sample.txt", "kb_id": self.kb_id},
+            json={"file_path": str(sample), "kb_id": self.kb_id},
         )
         self.assertEqual(response.status_code, 200)
         self.assertIn("chunk_count", response.json())
         self.assertTrue(response.json()["chunk_count"] >= 1)
+
+    def test_ingest_requires_admin(self):
+        user = user_service.create_user("normal_user", "normal_pw", role="user")
+        token = auth_service.create_access_token(user)
+        sample = kb_documents_dir(self.kb_id) / "user_forbidden.txt"
+        sample.write_text("普通用户不能调用 ingest。", encoding="utf-8")
+        response = self.client.post(
+            "/documents/ingest",
+            json={"file_path": str(sample), "kb_id": self.kb_id},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_ingest_rejects_path_outside_kb_dir(self):
+        response = self.client.post(
+            "/documents/ingest",
+            json={"file_path": "data/sample.txt", "kb_id": self.kb_id},
+        )
+        self.assertEqual(response.status_code, 403)
 
     def test_ingest_document_with_missing_file(self):
         response = self.client.post(

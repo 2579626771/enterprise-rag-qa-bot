@@ -2,8 +2,8 @@
 
 沿用 metadata_service 的设计：
 - MySQLUserRepo + InMemoryUserRepo 两套实现，接口一致；
-- 懒连接 + 自动降级：MySQL 连不上时退回内存仓库（此时账号仅存活于进程内，
-  重启即失，但保证登录/鉴权链路仍可跑，便于本地无库调试与单元测试）；
+- 懒连接 + 开发降级：开发环境 MySQL 连不上时退回内存仓库（此时账号仅存活于进程内，
+  重启即失，便于本地无库调试与单元测试）；生产环境连接失败直接报错；
 - 自动建 users 表；
 - 提供 _set_repo_for_test / _reset_repo_for_test 供测试注入内存仓库。
 
@@ -37,6 +37,7 @@ from app.config import (
     MYSQL_PASSWORD,
     MYSQL_PORT,
     MYSQL_USER,
+    require_mysql,
 )
 from app.utils.logger import get_logger
 
@@ -653,6 +654,8 @@ _repo = None
 
 def _build_repo():
     if not MYSQL_ENABLED:
+        if require_mysql():
+            raise RuntimeError("生产环境必须启用 MySQL，不能使用内存用户仓库")
         logger.info("MYSQL_ENABLED=false，用户账号使用内存仓库（重启即失）。")
         return InMemoryUserRepo()
     try:
@@ -660,6 +663,8 @@ def _build_repo():
         logger.info("用户账号已接入 MySQL：%s:%s/%s", MYSQL_HOST, MYSQL_PORT, MYSQL_DATABASE)
         return repo
     except Exception as exc:
+        if require_mysql():
+            raise RuntimeError(f"生产环境连接 MySQL 失败，用户账号仓库不可降级：{exc}") from exc
         logger.warning("接入 MySQL 失败，用户账号降级为内存仓库（重启即失）：%s", exc)
         return InMemoryUserRepo()
 

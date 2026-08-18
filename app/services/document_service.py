@@ -259,6 +259,12 @@ def _sanitize_path_segment(name: str, fallback: str = "unnamed") -> str:
     return name[:80]
 
 
+def sanitize_upload_filename(filename: str) -> str:
+    """把浏览器上传文件名收敛成安全的单层文件名。"""
+    raw_name = Path(str(filename or "").replace("\\", "/")).name
+    return _sanitize_path_segment(raw_name, fallback="upload")
+
+
 def kb_documents_dir(kb_id: int) -> Path:
     """某个知识库的文件目录：DOCUMENTS_DIR/{用户名}/{kb_id}/。
 

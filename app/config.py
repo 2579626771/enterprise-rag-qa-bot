@@ -1,3 +1,4 @@
+import os
 from pathlib import Path            # Path 是 Python 自带的工具，用来处理文件路径。  
 
 BASE_DIR = Path(__file__).resolve().parent.parent    #找到项目根目录 enterprise-rag
@@ -27,11 +28,21 @@ def load_env_file() -> dict[str,str]:    #定义读取 .env 的函数
     return env_values
 
 
-_env = load_env_file()
+_env = {**load_env_file(), **os.environ}
+
+
+def _as_bool(value: str) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _as_list(value: str) -> list[str]:
+    return [item.strip() for item in str(value).split(",") if item.strip()]
 
 APP_NAME = _env.get("APP_NAME","Enterprise RAG")
 APP_VERSION = _env.get("APP_VERSION","0.1.0")
 APP_ENV = _env.get("APP_ENV","development")
+CORS_ORIGINS = _as_list(_env.get("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"))
+LOG_DIR = _env.get("LOG_DIR", str(BASE_DIR / "logs"))
 EMBEDDING_PROVIDER = _env.get("EMBEDDING_PROVIDER", "aliyun")
 ALIYUN_API_KEY = _env.get("ALIYUN_API_KEY", "")
 ALIYUN_EMBEDDING_MODEL = _env.get("ALIYUN_EMBEDDING_MODEL","qwen3.7-text-embedding")
@@ -62,6 +73,7 @@ CHROMA_DIR = _env.get("CHROMA_DIR", str(BASE_DIR / "data" / "chroma"))
 CHROMA_COLLECTION = _env.get("CHROMA_COLLECTION", "knowledge_base")
 RAG_TOP_K = int(_env.get("RAG_TOP_K", "5"))
 DOCUMENTS_DIR = _env.get("DOCUMENTS_DIR", str(BASE_DIR / "data" / "documents"))
+DOCUMENT_UPLOAD_MAX_MB = int(_env.get("DOCUMENT_UPLOAD_MAX_MB", "50"))
 
 # 问题反馈截图附件：本地磁盘存储目录、单反馈最大张数、单张最大 MB。
 FEEDBACK_ATTACHMENT_DIR = _env.get("FEEDBACK_ATTACHMENT_DIR", str(BASE_DIR / "data" / "feedback_attachments"))
@@ -130,15 +142,15 @@ HYBRID_RRF_K = int(_env.get("HYBRID_RRF_K", "60"))
 
 # ===== MySQL（文档元数据持久化）=====
 # 存放文档的分类/描述/上传时间/状态等元数据，替换早期前端 localStorage 占位。
-# MYSQL_ENABLED：是否启用 MySQL。为空或数据库不可用时，后端自动降级为“内存元数据”，
-#   保证上传/问答主流程不受数据库影响（仅元数据不落盘）。
+# MYSQL_ENABLED：是否启用 MySQL。开发环境可关闭或在连接失败时降级为内存仓库；
+#   APP_ENV=production 时禁止关闭和失败降级。
 MYSQL_HOST = _env.get("MYSQL_HOST", "127.0.0.1")
 MYSQL_PORT = int(_env.get("MYSQL_PORT", "3306"))
 MYSQL_USER = _env.get("MYSQL_USER", "root")
 MYSQL_PASSWORD = _env.get("MYSQL_PASSWORD", "")
 MYSQL_DATABASE = _env.get("MYSQL_DATABASE", "enterprise_rag")
 # 默认：只要填了用户名就启用；可用 MYSQL_ENABLED=false 显式关闭。
-MYSQL_ENABLED = _env.get("MYSQL_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+MYSQL_ENABLED = _as_bool(_env.get("MYSQL_ENABLED", "true"))
 
 # ===== 模型用量监控告警阈值 =====
 # 管理员侧“模型监控”实时计算告警；监控写入失败不会影响问答/入库主流程。
@@ -168,3 +180,61 @@ LOGIN_LOCK_MINUTES = int(_env.get("LOGIN_LOCK_MINUTES", "15"))
 # ADMIN_KB_QUOTA：管理员的配额（给一个很大的值，等同不限制）。
 DEFAULT_KB_QUOTA = int(_env.get("DEFAULT_KB_QUOTA", "3"))
 ADMIN_KB_QUOTA = int(_env.get("ADMIN_KB_QUOTA", "9999"))
+
+
+def is_production() -> bool:
+    return APP_ENV.strip().lower() == "production"
+
+
+def require_mysql() -> bool:
+    return is_production()
+
+
+def validate_production_config() -> None:
+    """生产启动硬门槛：拒绝开发默认值和非持久化数据层。"""
+    if not is_production():
+        return
+
+    def _looks_placeholder(value: str) -> bool:
+        lowered = value.strip().lower()
+        return any(marker in lowered for marker in ("your-", "change-this", "replace-", "placeholder"))
+
+    errors = []
+    if not MYSQL_ENABLED:
+        errors.append("APP_ENV=production 时 MYSQL_ENABLED 必须为 true")
+    if not MYSQL_PASSWORD or _looks_placeholder(MYSQL_PASSWORD):
+        errors.append("APP_ENV=production 时 MYSQL_PASSWORD 必须替换为真实密码")
+    if JWT_SECRET == "dev-only-change-me-in-production" or len(JWT_SECRET.strip()) < 32 or _looks_placeholder(JWT_SECRET):
+        errors.append("APP_ENV=production 时 JWT_SECRET 必须替换为至少 32 字符的随机密钥")
+    if DEFAULT_ADMIN_USERNAME == "admin" and DEFAULT_ADMIN_PASSWORD == "admin123":
+        errors.append("APP_ENV=production 时 DEFAULT_ADMIN_USERNAME/DEFAULT_ADMIN_PASSWORD 不能使用默认 admin/admin123")
+    if _looks_placeholder(DEFAULT_ADMIN_PASSWORD):
+        errors.append("APP_ENV=production 时 DEFAULT_ADMIN_PASSWORD 必须替换为真实密码")
+
+    if errors:
+        raise RuntimeError("生产配置校验失败：" + "；".join(errors))
+
+
+def check_mysql_ready() -> None:
+    """验证 MySQL 可连接；readyz 和生产启动共用。"""
+    if not MYSQL_ENABLED:
+        raise RuntimeError("MYSQL_ENABLED=false")
+
+    import pymysql
+
+    conn = pymysql.connect(
+        host=MYSQL_HOST,
+        port=MYSQL_PORT,
+        user=MYSQL_USER,
+        password=MYSQL_PASSWORD,
+        database=MYSQL_DATABASE,
+        charset="utf8mb4",
+        connect_timeout=5,
+        read_timeout=5,
+        write_timeout=5,
+    )
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+    finally:
+        conn.close()

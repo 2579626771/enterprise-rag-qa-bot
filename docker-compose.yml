@@ -1,0 +1,66 @@
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-this-root-password}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-enterprise_rag}
+      MYSQL_USER: ${MYSQL_USER:-rag_app}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change-this-app-password}
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./logs/mysql:/var/log/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  backend:
+    build:
+      context: .
+    restart: unless-stopped
+    env_file:
+      - ${APP_ENV_FILE:-.env.production.example}
+    environment:
+      APP_ENV: production
+      MYSQL_HOST: mysql
+      DOCUMENTS_DIR: /app/data/documents
+      CHROMA_DIR: /app/data/chroma
+      FEEDBACK_ATTACHMENT_DIR: /app/data/feedback_attachments
+      LOG_DIR: /app/logs
+      NO_PROXY: dashscope.aliyuncs.com,api.deepseek.com,127.0.0.1,localhost,mysql,backend
+      no_proxy: dashscope.aliyuncs.com,api.deepseek.com,127.0.0.1,localhost,mysql,backend
+    volumes:
+      - ./data/documents:/app/data/documents
+      - ./data/chroma:/app/data/chroma
+      - ./data/feedback_attachments:/app/data/feedback_attachments
+      - ./logs/backend:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=5).read()\""]
+      interval: 15s
+      timeout: 8s
+      retries: 8
+      start_period: 30s
+
+  frontend-nginx:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./certs:/etc/nginx/certs:ro
+      - ./logs/nginx:/var/log/nginx
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  mysql_data:

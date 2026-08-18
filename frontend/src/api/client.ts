@@ -1,6 +1,6 @@
 import axios from 'axios'
 
-// 统一的 axios 实例。baseURL 用 /api，由 vite proxy 转发到后端。
+// 统一的 axios 实例。baseURL 用 /api：开发由 Vite proxy 转发，生产由 Nginx 反代。
 const http = axios.create({
   baseURL: '/api',
   timeout: 60000, // RAG 回答可能较慢，给 60 秒

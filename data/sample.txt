@@ -1,6 +1,6 @@
-这是一个用于测试 RAG 文档读取功能的示例文本。
-在本项目中，可以使用 read_text_file(file_path) 函数读取 txt 文档内容。
-这个函数会使用 UTF-8 编码读取文件，并返回字符串。
+这是一个脱敏示例文档，用于测试 RAG 文档读取、切分和入库流程。
 
-读取到文本后，可以使用 create_document_from_file(document_id, file_path) 创建 Document 对象。
-然后可以使用 split_document_into_chunks(document, chunk_size, overlap) 把文档切分成多个 chunks。
+系统会读取文本内容，将文档切分为多个片段，再调用 Embedding 服务生成向量并写入向量库。
+用户提问时，系统会在授权范围内检索相关片段，并基于检索结果生成带来源的回答。
+
+本文件只包含虚构说明，不包含真实业务资料、客户名称、内部地址、账号密码或 API Key。

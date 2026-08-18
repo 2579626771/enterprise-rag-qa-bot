@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+!.env.production.example
 
 # Virtual environments
 .venv/
@@ -18,16 +19,20 @@ __pycache__/
 .vscode/
 .idea/
 .claude/
+.codebuddy/
 
 # 前端构建产物 / TS 增量编译缓存（不进仓库）
 frontend/*.tsbuildinfo
 frontend/**/*.tsbuildinfo
+frontend/vite.config.d.ts
 frontend/dist/
 frontend/node_modules/
 
 # Logs and temporary files
 *.log
+pip_install*.log
 logs/
+certs/
 .DS_Store
 Thumbs.db
 
@@ -35,6 +40,7 @@ Thumbs.db
 # （避免 git 仓库被文档/向量库撑大；文件仍正常存在磁盘上，程序照常读写）
 data/documents/
 data/chroma/
+data/feedback_attachments/
 
 # 运行时文档备份目录（迁移脚本产生，不进仓库）
 data/documents.bak_*/
